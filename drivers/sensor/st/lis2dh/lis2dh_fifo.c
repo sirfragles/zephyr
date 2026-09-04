@@ -301,20 +301,24 @@ unlock:
 int lis2dh_fifo_stop(const struct device *dev)
 {
 	struct lis2dh_data *lis2dh = dev->data;
+	bool was_active;
 	int first_error = 0;
 	int status;
 
 	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
 
-	if (!lis2dh_fifo_is_active(dev)) {
-		goto unlock;
-	}
-
+	was_active = lis2dh_fifo_is_active(dev);
 	atomic_clear(&lis2dh->fifo_active);
 #ifdef CONFIG_LIS2DH_STREAM
 	atomic_clear(&lis2dh->stream_active);
+	if (lis2dh->streaming_sqe != NULL) {
+		rtio_iodev_sqe_err(lis2dh->streaming_sqe, -ECANCELED);
+	}
 	lis2dh->streaming_sqe = NULL;
 #endif
+	if (!was_active) {
+		goto unlock;
+	}
 	status = lis2dh_trigger_int1_set(dev, false);
 	if (status < 0) {
 		first_error = status;

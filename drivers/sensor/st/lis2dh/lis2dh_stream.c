@@ -79,11 +79,6 @@ void lis2dh_stream_submit(const struct device *dev, struct rtio_iodev_sqe *iodev
 	int status;
 	size_t i;
 
-	if (lis2dh->streaming_sqe != NULL) {
-		rtio_iodev_sqe_err(iodev_sqe, -EBUSY);
-		return;
-	}
-
 	if (cfg->count == 0U) {
 		rtio_iodev_sqe_err(iodev_sqe, -EINVAL);
 		return;
@@ -97,16 +92,37 @@ void lis2dh_stream_submit(const struct device *dev, struct rtio_iodev_sqe *iodev
 		}
 	}
 
+	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	if (lis2dh->streaming_sqe != NULL) {
+		(void)k_mutex_unlock(&lis2dh->fifo_lock);
+		rtio_iodev_sqe_err(iodev_sqe, -EBUSY);
+		return;
+	}
+
 	lis2dh->streaming_sqe = iodev_sqe;
 	if (atomic_get(&lis2dh->stream_active) == 0) {
+		/* Reserve the stream before enabling the interrupt source. */
+		atomic_set(&lis2dh->stream_active, 1);
+		(void)k_mutex_unlock(&lis2dh->fifo_lock);
 		status = lis2dh_fifo_start(dev);
+		(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
 		if (status < 0) {
-			lis2dh->streaming_sqe = NULL;
+			if (lis2dh->streaming_sqe == iodev_sqe) {
+				lis2dh->streaming_sqe = NULL;
+			}
+			atomic_clear(&lis2dh->stream_active);
+			(void)k_mutex_unlock(&lis2dh->fifo_lock);
 			rtio_iodev_sqe_err(iodev_sqe, status);
 			return;
 		}
-		atomic_set(&lis2dh->stream_active, 1);
+		if (lis2dh->streaming_sqe != iodev_sqe) {
+			(void)k_mutex_unlock(&lis2dh->fifo_lock);
+			/* stop() won the race and already completed the SQE */
+			(void)lis2dh_fifo_stop(dev);
+			return;
+		}
 	}
+	(void)k_mutex_unlock(&lis2dh->fifo_lock);
 }
 
 int lis2dh_stream_handle_irq(const struct device *dev, uint8_t fifo_src, const uint8_t *raw,
