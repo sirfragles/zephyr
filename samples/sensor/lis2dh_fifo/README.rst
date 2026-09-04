@@ -7,11 +7,11 @@
 Overview
 ********
 
-This sample starts the LIS2DH hardware FIFO, installs handlers for
-``SENSOR_TRIG_FIFO_WATERMARK`` and ``SENSOR_TRIG_FIFO_FULL``, and prints every
-batch drained by the driver. It uses the classic Sensor API for trigger
-registration and the LIS2DH-specific ``lis2dh_fifo_read()`` function to obtain
-the complete batch with timestamps.
+This sample starts an RTIO ``sensor_stream()`` for the LIS2DH hardware FIFO.
+It requests both ``SENSOR_TRIG_FIFO_WATERMARK`` and ``SENSOR_TRIG_FIFO_FULL``
+with ``SENSOR_STREAM_DATA_INCLUDE``. The driver drains each FIFO batch and
+returns it through RTIO. The standard Sensor Async API decoder converts the
+raw frames into accelerometer samples with timestamps.
 
 The supplied HOLYIOT-25008 overlay sets the FIFO watermark to 16 samples. The
 board routes LIS2DH INT1 to GPIO2.0 and uses SPI mode 3, which is selected by
