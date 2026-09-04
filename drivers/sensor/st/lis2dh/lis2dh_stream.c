@@ -109,10 +109,12 @@ void lis2dh_stream_submit(const struct device *dev, struct rtio_iodev_sqe *iodev
 		if (status < 0) {
 			if (lis2dh->streaming_sqe == iodev_sqe) {
 				lis2dh->streaming_sqe = NULL;
+				atomic_clear(&lis2dh->stream_active);
+				(void)k_mutex_unlock(&lis2dh->fifo_lock);
+				rtio_iodev_sqe_err(iodev_sqe, status);
+				return;
 			}
-			atomic_clear(&lis2dh->stream_active);
 			(void)k_mutex_unlock(&lis2dh->fifo_lock);
-			rtio_iodev_sqe_err(iodev_sqe, status);
 			return;
 		}
 		if (lis2dh->streaming_sqe != iodev_sqe) {
@@ -143,6 +145,7 @@ int lis2dh_stream_handle_irq(const struct device *dev, uint8_t fifo_src, const u
 	if (FIELD_GET(RTIO_SQE_CANCELED, iodev_sqe->sqe.flags) != 0U) {
 		lis2dh->streaming_sqe = NULL;
 		atomic_clear(&lis2dh->stream_active);
+		rtio_iodev_sqe_err(iodev_sqe, -ECANCELED);
 		return -ECANCELED;
 	}
 
@@ -170,6 +173,11 @@ int lis2dh_stream_handle_irq(const struct device *dev, uint8_t fifo_src, const u
 	}
 
 	*drop = stream_trigger->opt == SENSOR_STREAM_DATA_DROP;
+	if (FIELD_GET(RTIO_SQE_CANCELED, iodev_sqe->sqe.flags) != 0U) {
+		atomic_clear(&lis2dh->stream_active);
+		rtio_iodev_sqe_err(iodev_sqe, -ECANCELED);
+		return -ECANCELED;
+	}
 	rtio_iodev_sqe_ok(iodev_sqe, 0);
 
 	return 0;
