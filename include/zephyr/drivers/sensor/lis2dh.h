@@ -21,6 +21,53 @@
  */
 
 #include <zephyr/drivers/sensor.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/**
+ * @brief A single LIS2DH FIFO sample.
+ */
+struct lis2dh_fifo_sample {
+	struct sensor_value accel[3];
+	uint64_t timestamp_ns;
+};
+
+/**
+ * @brief Start hardware FIFO streaming.
+ *
+ * @param dev LIS2DH device.
+ *
+ * @retval 0 FIFO streaming started.
+ * @retval -EBUSY INT1 or FIFO streaming is already in use.
+ * @retval -ENOTSUP FIFO support or an INT1 GPIO is unavailable.
+ * @retval <0 Bus or GPIO error.
+ */
+int lis2dh_fifo_start(const struct device *dev);
+
+/**
+ * @brief Stop hardware FIFO streaming and discard queued samples.
+ *
+ * @param dev LIS2DH device.
+ *
+ * @retval 0 FIFO streaming stopped.
+ * @retval <0 Bus or GPIO error.
+ */
+int lis2dh_fifo_stop(const struct device *dev);
+
+/**
+ * @brief Read samples drained from the hardware FIFO.
+ *
+ * @param dev LIS2DH device.
+ * @param samples Destination sample array.
+ * @param capacity Number of entries in @p samples.
+ * @param count Number of samples copied to @p samples.
+ *
+ * @retval 0 Samples copied successfully.
+ * @retval -EACCES FIFO streaming is not active.
+ * @retval -EINVAL A required argument is NULL.
+ */
+int lis2dh_fifo_read(const struct device *dev, struct lis2dh_fifo_sample *samples,
+		     size_t capacity, size_t *count);
 
 /**
  * Possible values for @ref SENSOR_ATTR_LIS2DH_SELF_TEST custom attribute.

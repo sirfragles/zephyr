@@ -26,15 +26,18 @@ static const gpio_flags_t gpio_int_cfg[5] = {
 			GPIO_INT_LEVEL_LOW,
 			};
 
-static inline void setup_int1(const struct device *dev,
-			      bool enable)
+int lis2dh_trigger_int1_set(const struct device *dev, bool enable)
 {
 	const struct lis2dh_config *cfg = dev->config;
 
-	gpio_pin_interrupt_configure_dt(&cfg->gpio_drdy,
-					enable
-					? gpio_int_cfg[cfg->int1_mode]
-					: GPIO_INT_DISABLE);
+	return gpio_pin_interrupt_configure_dt(&cfg->gpio_drdy,
+						enable ? gpio_int_cfg[cfg->int1_mode]
+						       : GPIO_INT_DISABLE);
+}
+
+static inline void setup_int1(const struct device *dev, bool enable)
+{
+	(void)lis2dh_trigger_int1_set(dev, enable);
 }
 
 static int lis2dh_trigger_drdy_set(const struct device *dev,
@@ -45,6 +48,12 @@ static int lis2dh_trigger_drdy_set(const struct device *dev,
 	const struct lis2dh_config *cfg = dev->config;
 	struct lis2dh_data *lis2dh = dev->data;
 	int status;
+
+#ifdef CONFIG_LIS2DH_FIFO
+	if (lis2dh_fifo_is_active(dev)) {
+		return -EBUSY;
+	}
+#endif
 
 	if (cfg->gpio_drdy.port == NULL) {
 		LOG_ERR("trigger_set DRDY int not supported");
@@ -284,6 +293,13 @@ int lis2dh_trigger_set(const struct device *dev,
 		return lis2dh_trigger_anym_set(dev, handler, trig);
 	} else if (trig->type == SENSOR_TRIG_TAP) {
 		return lis2dh_trigger_tap_set(dev, handler, trig);
+	} else if (trig->type == SENSOR_TRIG_FIFO_WATERMARK ||
+		   trig->type == SENSOR_TRIG_FIFO_FULL) {
+#ifdef CONFIG_LIS2DH_FIFO
+		return lis2dh_fifo_trigger_set(dev, trig, handler);
+#else
+		return -ENOTSUP;
+#endif
 	}
 
 	return -ENOTSUP;
@@ -372,6 +388,12 @@ static void lis2dh_gpio_int1_callback(const struct device *dev,
 
 	atomic_set_bit(&lis2dh->trig_flags, TRIGGED_INT1);
 
+#ifdef CONFIG_LIS2DH_FIFO
+	if (lis2dh_fifo_is_active(lis2dh->dev)) {
+		lis2dh_fifo_irq_timestamp(lis2dh->dev);
+	}
+#endif
+
 	/* int is level triggered so disable until processed */
 	setup_int1(lis2dh->dev, false);
 
@@ -433,6 +455,20 @@ static void lis2dh_thread_cb(const struct device *dev)
 	if (cfg->gpio_drdy.port &&
 			atomic_test_and_clear_bit(&lis2dh->trig_flags,
 			TRIGGED_INT1)) {
+#ifdef CONFIG_LIS2DH_FIFO
+		if (lis2dh_fifo_is_active(dev)) {
+			status = lis2dh_fifo_handle_irq(dev);
+			if (status < 0) {
+				LOG_ERR("FIFO interrupt handling failed: %d", status);
+				(void)lis2dh_fifo_stop(dev);
+			}
+
+			if (lis2dh_fifo_is_active(dev)) {
+				setup_int1(dev, true);
+			}
+			return;
+		}
+#endif
 		if (likely(lis2dh->handler_drdy != NULL)) {
 			lis2dh->handler_drdy(dev, lis2dh->trig_drdy);
 		}

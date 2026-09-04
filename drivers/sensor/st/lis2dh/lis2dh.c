@@ -95,6 +95,10 @@ static int lis2dh_channel_get(const struct device *dev,
 			      struct sensor_value *val)
 {
 	struct lis2dh_data *lis2dh = dev->data;
+#ifdef CONFIG_LIS2DH_FIFO
+	union lis2dh_sample fifo_sample;
+#endif
+	const union lis2dh_sample *sample = &lis2dh->sample;
 	int ofs_start;
 	int ofs_end;
 	int i;
@@ -122,8 +126,19 @@ static int lis2dh_channel_get(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+#ifdef CONFIG_LIS2DH_FIFO
+	if (lis2dh_fifo_is_active(dev)) {
+		int status = lis2dh_fifo_cache_copy(dev, &fifo_sample);
+
+		if (status < 0) {
+			return status;
+		}
+		sample = &fifo_sample;
+	}
+#endif
+
 	for (i = ofs_start; i <= ofs_end; i++, val++) {
-		lis2dh_convert(lis2dh->sample.xyz[i], lis2dh->scale, val);
+		lis2dh_convert(sample->xyz[i], lis2dh->scale, val);
 	}
 
 	return 0;
@@ -164,6 +179,13 @@ static int lis2dh_sample_fetch(const struct device *dev,
 			       enum sensor_channel chan)
 {
 	int status = -ENODATA;
+
+#ifdef CONFIG_LIS2DH_FIFO
+	if ((chan == SENSOR_CHAN_ALL || chan == SENSOR_CHAN_ACCEL_XYZ) &&
+	    lis2dh_fifo_is_active(dev)) {
+		return lis2dh_fifo_sample_fetch(dev);
+	}
+#endif
 
 	if (chan == SENSOR_CHAN_ALL) {
 		status = lis2dh_fetch_xyz(dev, chan);
@@ -301,6 +323,12 @@ static int lis2dh_acc_config(const struct device *dev,
 			     enum sensor_attribute attr,
 			     const struct sensor_value *val)
 {
+#ifdef CONFIG_LIS2DH_FIFO
+	if (lis2dh_fifo_is_active(dev)) {
+		return -EBUSY;
+	}
+#endif
+
 	switch (attr) {
 #ifdef CONFIG_LIS2DH_ACCEL_RANGE_RUNTIME
 	case SENSOR_ATTR_FULL_SCALE:
@@ -519,6 +547,14 @@ static int lis2dh_init(const struct device *dev)
 		return status;
 	}
 
+#ifdef CONFIG_LIS2DH_FIFO
+	status = lis2dh_fifo_init(dev);
+	if (status < 0) {
+		LOG_ERR("Failed to initialize FIFO state.");
+		return status;
+	}
+#endif
+
 	return pm_device_driver_init(dev, lis2dh_pm_action);
 }
 
@@ -578,6 +614,13 @@ static int lis2dh_init(const struct device *dev)
 #define LIS2DH_CFG_INT(inst)
 #endif /* CONFIG_LIS2DH_TRIGGER */
 
+#ifdef CONFIG_LIS2DH_FIFO
+#define LIS2DH_CFG_FIFO(inst) \
+	.fifo_watermark = DT_INST_PROP(inst, fifo_watermark),
+#else
+#define LIS2DH_CFG_FIFO(inst)
+#endif
+
 #ifdef CONFIG_LIS2DH_MEASURE_TEMPERATURE
 /* The first 8 bits are the integer portion of the temperature.
  * The result is left justified.  The remainder of the bits are
@@ -616,6 +659,7 @@ static int lis2dh_init(const struct device *dev)
 			.anym_latch = ANYM_LATCH(inst),			\
 			.anym_mode = ANYM_MODE(inst), },		\
 		LIS2DH_CFG_TEMPERATURE(inst)				\
+		LIS2DH_CFG_FIFO(inst)					\
 		LIS2DH_CFG_INT(inst)					\
 	}
 
@@ -639,6 +683,7 @@ static int lis2dh_init(const struct device *dev)
 			.anym_latch = ANYM_LATCH(inst),			\
 			.anym_mode = ANYM_MODE(inst), },		\
 		LIS2DH_CFG_TEMPERATURE(inst)				\
+		LIS2DH_CFG_FIFO(inst)					\
 		LIS2DH_CFG_INT(inst)					\
 	}
 

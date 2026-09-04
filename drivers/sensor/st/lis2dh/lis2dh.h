@@ -255,6 +255,9 @@ struct lis2dh_config {
 #ifdef CONFIG_LIS2DH_MEASURE_TEMPERATURE
 	const struct temperature temperature;
 #endif
+#ifdef CONFIG_LIS2DH_FIFO
+	const uint8_t fifo_watermark;
+#endif
 };
 
 struct lis2dh_transfer_function {
@@ -283,6 +286,26 @@ struct lis2dh_data {
 #endif
 
 	uint8_t reg_ctrl1_active_val;
+
+#ifdef CONFIG_LIS2DH_FIFO
+	struct k_mutex fifo_lock;
+	struct {
+		int16_t xyz[3];
+		uint64_t timestamp_ns;
+	} fifo_samples[CONFIG_LIS2DH_FIFO_SW_QUEUE_SAMPLES];
+	uint16_t fifo_head;
+	uint16_t fifo_tail;
+	uint16_t fifo_count;
+	uint32_t fifo_dropped_samples;
+	uint64_t fifo_irq_timestamp_ns;
+	uint64_t fifo_period_ns;
+	atomic_t fifo_active;
+	bool fifo_cache_valid;
+	sensor_trigger_handler_t fifo_handler_watermark;
+	const struct sensor_trigger *fifo_trig_watermark;
+	sensor_trigger_handler_t fifo_handler_full;
+	const struct sensor_trigger *fifo_trig_full;
+#endif
 
 #ifdef CONFIG_LIS2DH_TRIGGER
 	const struct device *dev;
@@ -324,6 +347,21 @@ int lis2dh_init_interrupt(const struct device *dev);
 int lis2dh_acc_slope_config(const struct device *dev,
 			    enum sensor_attribute attr,
 			    const struct sensor_value *val);
+
+int lis2dh_trigger_int1_set(const struct device *dev, bool enable);
+#endif
+
+#ifdef CONFIG_LIS2DH_FIFO
+int lis2dh_fifo_init(const struct device *dev);
+bool lis2dh_fifo_is_active(const struct device *dev);
+int lis2dh_fifo_stop(const struct device *dev);
+int lis2dh_fifo_handle_irq(const struct device *dev);
+void lis2dh_fifo_irq_timestamp(const struct device *dev);
+int lis2dh_fifo_trigger_set(const struct device *dev,
+			    const struct sensor_trigger *trig,
+			    sensor_trigger_handler_t handler);
+int lis2dh_fifo_sample_fetch(const struct device *dev);
+int lis2dh_fifo_cache_copy(const struct device *dev, union lis2dh_sample *sample);
 #endif
 
 int lis2dh_spi_init(const struct device *dev);
