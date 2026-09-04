@@ -485,6 +485,9 @@ int lis2dh_fifo_handle_irq(const struct device *dev)
 	bool drop = false;
 	bool stop_stream = false;
 	bool overrun;
+#ifdef CONFIG_LIS2DH_STREAM
+	struct rtio_iodev_sqe *stream_sqe = NULL;
+#endif
 	int status;
 	size_t i;
 
@@ -560,6 +563,15 @@ int lis2dh_fifo_handle_irq(const struct device *dev)
 #endif
 
 unlock:
+#ifdef CONFIG_LIS2DH_STREAM
+	if (status < 0 && lis2dh->streaming_sqe != NULL) {
+		stream_sqe = lis2dh->streaming_sqe;
+		lis2dh->streaming_sqe = NULL;
+		atomic_clear(&lis2dh->stream_active);
+		rtio_iodev_sqe_err(stream_sqe, status);
+		stop_stream = true;
+	}
+#endif
 	(void)k_mutex_unlock(&lis2dh->fifo_lock);
 
 #ifdef CONFIG_LIS2DH_STREAM
