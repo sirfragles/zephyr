@@ -41,6 +41,21 @@ endchoice
 config LIS2DH_TRIGGER
 	bool
 
+config LIS2DH_FIFO
+	bool "FIFO support"
+	depends on LIS2DH_TRIGGER
+	depends on $(dt_compat_any_has_prop,$(DT_COMPAT_ST_LIS2DH),fifo-watermark)
+	help
+	  Enable hardware FIFO support for LIS2DH sensors with an INT1 GPIO.
+
+config LIS2DH_FIFO_SW_QUEUE_SAMPLES
+	int "FIFO software queue size"
+	depends on LIS2DH_FIFO
+	range 32 256
+	default 64
+	help
+	  Number of FIFO samples retained in the driver software queue.
+
 config LIS2DH_THREAD_PRIORITY
 	int "Thread priority"
 	depends on LIS2DH_TRIGGER_OWN_THREAD
