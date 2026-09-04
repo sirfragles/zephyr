@@ -132,11 +132,67 @@ void lis2dh_fifo_irq_timestamp(const struct device *dev)
 	lis2dh->fifo_irq_timestamp_ns = k_cyc_to_ns_floor64(k_cycle_get_64());
 }
 
+static int lis2dh_fifo_restore(const struct device *dev, uint8_t ctrl3,
+				       uint8_t ctrl5, uint8_t fifo_ctrl)
+{
+	struct lis2dh_data *lis2dh = dev->data;
+	int first_error = 0;
+	int status;
+	uint8_t value;
+
+	/* Attempt every write even when the bus reports an earlier failure. */
+	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_CTRL3, ctrl3);
+	if (status < 0) {
+		first_error = status;
+	}
+
+	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL, fifo_ctrl);
+	if (status < 0 && first_error == 0) {
+		first_error = status;
+	}
+
+	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_CTRL5, ctrl5);
+	if (status < 0 && first_error == 0) {
+		first_error = status;
+	}
+
+	/* FIFO start requires INT1 to be unused before configuration. */
+	status = lis2dh_trigger_int1_set(dev, false);
+	if (status < 0 && first_error == 0) {
+		first_error = status;
+	}
+
+	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_CTRL3, &value);
+	if (status < 0 || value != ctrl3) {
+		if (first_error == 0) {
+			first_error = status < 0 ? status : -EIO;
+		}
+	}
+	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_FIFO_CTRL, &value);
+	if (status < 0 || value != fifo_ctrl) {
+		if (first_error == 0) {
+			first_error = status < 0 ? status : -EIO;
+		}
+	}
+	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_CTRL5, &value);
+	if (status < 0 || value != ctrl5) {
+		if (first_error == 0) {
+			first_error = status < 0 ? status : -EIO;
+		}
+	}
+
+	return first_error;
+}
+
 int lis2dh_fifo_start(const struct device *dev)
 {
 	const struct lis2dh_config *cfg = dev->config;
 	struct lis2dh_data *lis2dh = dev->data;
 	uint8_t ctrl3;
+	uint8_t ctrl5;
+	uint8_t fifo_ctrl;
+	bool registers_changed = false;
+	int rollback_status;
 	int status;
 
 	if (cfg->gpio_drdy.port == NULL) {
@@ -159,6 +215,14 @@ int lis2dh_fifo_start(const struct device *dev)
 	if (status < 0) {
 		goto unlock;
 	}
+	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_CTRL5, &ctrl5);
+	if (status < 0) {
+		goto unlock;
+	}
+	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_FIFO_CTRL, &fifo_ctrl);
+	if (status < 0) {
+		goto unlock;
+	}
 
 	if ((ctrl3 & (LIS2DH_EN_CLICK_INT1 | LIS2DH_EN_IA_INT1 |
 		      LIS2DH_EN_DRDY1_INT1)) != 0U) {
@@ -176,32 +240,36 @@ int lis2dh_fifo_start(const struct device *dev)
 		goto unlock;
 	}
 
+	registers_changed = true;
 	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL,
 					  LIS2DH_FIFO_MODE_BYPASS);
 	if (status < 0) {
-		goto unlock;
+		goto rollback;
 	}
 
+	registers_changed = true;
 	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL5, LIS2DH_EN_FIFO,
 					   LIS2DH_EN_FIFO);
 	if (status < 0) {
-		goto disable_fifo;
+		goto rollback;
 	}
 
+	registers_changed = true;
 	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL,
 					  LIS2DH_FIFO_MODE_STREAM |
 					  (cfg->fifo_watermark - 1U));
 	if (status < 0) {
-		goto disable_fifo;
+		goto rollback;
 	}
 
+	registers_changed = true;
 	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL3,
 					   LIS2DH_EN_FIFO_WTM_INT1 |
 					   LIS2DH_EN_FIFO_OVRN_INT1,
 					   LIS2DH_EN_FIFO_WTM_INT1 |
-					   LIS2DH_EN_FIFO_OVRN_INT1);
+					  LIS2DH_EN_FIFO_OVRN_INT1);
 	if (status < 0) {
-		goto disable_fifo;
+		goto rollback;
 	}
 
 	lis2dh_fifo_clear(lis2dh);
@@ -210,17 +278,19 @@ int lis2dh_fifo_start(const struct device *dev)
 	status = lis2dh_trigger_int1_set(dev, true);
 	if (status < 0) {
 		atomic_clear(&lis2dh->fifo_active);
-		goto disable_fifo;
+		goto rollback;
 	}
 
 	goto unlock;
 
-disable_fifo:
-	(void)lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL3,
-					 LIS2DH_EN_FIFO_WTM_INT1 |
-					 LIS2DH_EN_FIFO_OVRN_INT1, 0U);
-	(void)lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL, LIS2DH_FIFO_MODE_BYPASS);
-	(void)lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL5, LIS2DH_EN_FIFO, 0U);
+rollback:
+	atomic_clear(&lis2dh->fifo_active);
+	if (registers_changed) {
+		rollback_status = lis2dh_fifo_restore(dev, ctrl3, ctrl5, fifo_ctrl);
+		if (rollback_status < 0) {
+			LOG_ERR("FIFO start rollback failed: %d", rollback_status);
+		}
+	}
 
 unlock:
 	(void)k_mutex_unlock(&lis2dh->fifo_lock);
