@@ -111,6 +111,9 @@ int lis2dh_fifo_init(const struct device *dev)
 	k_mutex_init(&lis2dh->fifo_lock);
 	lis2dh_fifo_clear(lis2dh);
 	atomic_clear(&lis2dh->fifo_active);
+#ifdef CONFIG_LIS2DH_STREAM
+	atomic_clear(&lis2dh->stream_active);
+#endif
 
 	return 0;
 }
@@ -238,6 +241,10 @@ int lis2dh_fifo_stop(const struct device *dev)
 	}
 
 	atomic_clear(&lis2dh->fifo_active);
+#ifdef CONFIG_LIS2DH_STREAM
+	atomic_clear(&lis2dh->stream_active);
+	lis2dh->streaming_sqe = NULL;
+#endif
 	status = lis2dh_trigger_int1_set(dev, false);
 	if (status < 0) {
 		first_error = status;
@@ -267,6 +274,38 @@ unlock:
 
 	return first_error;
 }
+
+#ifdef CONFIG_LIS2DH_STREAM
+int lis2dh_fifo_drop(const struct device *dev)
+{
+	const struct lis2dh_config *cfg = dev->config;
+	struct lis2dh_data *lis2dh = dev->data;
+	int status;
+
+	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	if (!lis2dh_fifo_is_active(dev)) {
+		status = -EACCES;
+		goto unlock;
+	}
+
+	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL, LIS2DH_FIFO_MODE_BYPASS);
+	if (status < 0) {
+		goto unlock;
+	}
+
+	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL,
+					  LIS2DH_FIFO_MODE_STREAM |
+					  (cfg->fifo_watermark - 1U));
+	if (status == 0) {
+		lis2dh_fifo_clear(lis2dh);
+	}
+
+unlock:
+	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+
+	return status;
+}
+#endif
 
 int lis2dh_fifo_sample_fetch(const struct device *dev)
 {
@@ -369,6 +408,8 @@ int lis2dh_fifo_handle_irq(const struct device *dev)
 	uint8_t src;
 	uint8_t sample_count;
 	uint64_t timestamp_ns;
+	bool drop = false;
+	bool stop_stream = false;
 	bool overrun;
 	int status;
 	size_t i;
@@ -435,8 +476,34 @@ int lis2dh_fifo_handle_irq(const struct device *dev)
 		trig = lis2dh->fifo_trig_watermark;
 	}
 
+#ifdef CONFIG_LIS2DH_STREAM
+	status = lis2dh_stream_handle_irq(dev, src, raw, sample_count,
+					 timestamp_ns - lis2dh->fifo_period_ns, &drop);
+	if (status == -ECANCELED) {
+		status = 0;
+		stop_stream = true;
+	}
+#endif
+
 unlock:
 	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+
+#ifdef CONFIG_LIS2DH_STREAM
+	if (drop) {
+		int drop_status = lis2dh_fifo_drop(dev);
+
+		if (status == 0 && drop_status < 0) {
+			status = drop_status;
+		}
+	}
+	if (stop_stream) {
+		int stop_status = lis2dh_fifo_stop(dev);
+
+		if (status == 0 && stop_status < 0) {
+			status = stop_status;
+		}
+	}
+#endif
 
 	if (status == 0 && handler != NULL) {
 		handler(dev, trig);

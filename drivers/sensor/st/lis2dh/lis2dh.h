@@ -15,6 +15,10 @@
 #include <zephyr/drivers/sensor.h>
 #include <string.h>
 
+#ifdef CONFIG_SENSOR_ASYNC_API
+#include <zephyr/rtio/rtio.h>
+#endif
+
 #define LIS2DH_REG_WAI			0x0f
 #define LIS2DH_CHIP_ID			0x33
 #define LIS2DH_POR_WAIT_MS		5
@@ -305,6 +309,10 @@ struct lis2dh_data {
 	const struct sensor_trigger *fifo_trig_watermark;
 	sensor_trigger_handler_t fifo_handler_full;
 	const struct sensor_trigger *fifo_trig_full;
+#ifdef CONFIG_LIS2DH_STREAM
+	struct rtio_iodev_sqe *streaming_sqe;
+	atomic_t stream_active;
+#endif
 #endif
 
 #ifdef CONFIG_LIS2DH_TRIGGER
@@ -354,6 +362,7 @@ int lis2dh_trigger_int1_set(const struct device *dev, bool enable);
 #ifdef CONFIG_LIS2DH_FIFO
 int lis2dh_fifo_init(const struct device *dev);
 bool lis2dh_fifo_is_active(const struct device *dev);
+int lis2dh_fifo_start(const struct device *dev);
 int lis2dh_fifo_stop(const struct device *dev);
 int lis2dh_fifo_handle_irq(const struct device *dev);
 void lis2dh_fifo_irq_timestamp(const struct device *dev);
@@ -362,6 +371,18 @@ int lis2dh_fifo_trigger_set(const struct device *dev,
 			    sensor_trigger_handler_t handler);
 int lis2dh_fifo_sample_fetch(const struct device *dev);
 int lis2dh_fifo_cache_copy(const struct device *dev, union lis2dh_sample *sample);
+#ifdef CONFIG_LIS2DH_STREAM
+int lis2dh_fifo_drop(const struct device *dev);
+int lis2dh_stream_handle_irq(const struct device *dev, uint8_t fifo_src,
+			     const uint8_t *raw, uint8_t sample_count, uint64_t timestamp_ns,
+			     bool *drop);
+void lis2dh_stream_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe);
+#endif
+#endif
+
+#ifdef CONFIG_SENSOR_ASYNC_API
+void lis2dh_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe);
+int lis2dh_get_decoder(const struct device *dev, const struct sensor_decoder_api **decoder);
 #endif
 
 int lis2dh_spi_init(const struct device *dev);

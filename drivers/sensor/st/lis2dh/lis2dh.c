@@ -384,6 +384,10 @@ static DEVICE_API(sensor, lis2dh_driver_api) = {
 #endif
 	.sample_fetch = lis2dh_sample_fetch,
 	.channel_get = lis2dh_channel_get,
+#ifdef CONFIG_SENSOR_ASYNC_API
+	.get_decoder = lis2dh_get_decoder,
+	.submit = lis2dh_submit,
+#endif
 };
 
 int lis2dh_init_chip(const struct device *dev)

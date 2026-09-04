@@ -56,6 +56,15 @@ config LIS2DH_FIFO_SW_QUEUE_SAMPLES
 	help
 	  Number of FIFO samples retained in the driver software queue.
 
+config LIS2DH_STREAM
+	bool "Sensor Async API FIFO streaming support"
+	depends on LIS2DH_FIFO && SENSOR_ASYNC_API
+	select RTIO
+	help
+	  Enable sensor_stream() support for hardware FIFO watermark and full
+	  events. FIFO frames are returned through RTIO and decoded by the
+	  LIS2DH Sensor Async API decoder.
+
 config LIS2DH_THREAD_PRIORITY
 	int "Thread priority"
 	depends on LIS2DH_TRIGGER_OWN_THREAD
