@@ -378,8 +378,30 @@ static int lis2dh_attr_set(const struct device *dev, enum sensor_channel chan,
 	return 0;
 }
 
+#ifdef CONFIG_LIS2DH_FIFO_STATS
+static int lis2dh_attr_get(const struct device *dev, enum sensor_channel chan,
+			   enum sensor_attribute attr, struct sensor_value *val)
+{
+	const struct lis2dh_data *lis2dh = dev->data;
+
+	if (chan != SENSOR_CHAN_ACCEL_XYZ || attr != SENSOR_ATTR_LIS2DH_FIFO_DROPPED ||
+	    val == NULL) {
+		return -ENOTSUP;
+	}
+
+	val->val1 = lis2dh->fifo_dropped_samples > INT32_MAX ? INT32_MAX :
+		(int32_t)lis2dh->fifo_dropped_samples;
+	val->val2 = 0;
+
+	return 0;
+}
+#endif
+
 static DEVICE_API(sensor, lis2dh_driver_api) = {
 	.attr_set = lis2dh_attr_set,
+#ifdef CONFIG_LIS2DH_FIFO_STATS
+	.attr_get = lis2dh_attr_get,
+#endif
 #if CONFIG_LIS2DH_TRIGGER
 	.trigger_set = lis2dh_trigger_set,
 #endif

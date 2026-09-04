@@ -45,8 +45,15 @@ config LIS2DH_FIFO
 	bool "FIFO support"
 	depends on LIS2DH_TRIGGER
 	depends on $(dt_compat_any_has_prop,$(DT_COMPAT_ST_LIS2DH),fifo-watermark)
-	help
+		help
 	  Enable hardware FIFO support for LIS2DH sensors with an INT1 GPIO.
+
+config LIS2DH_FIFO_STATS
+	bool "Expose FIFO dropped-sample statistics"
+	depends on LIS2DH_FIFO
+	help
+	  Expose the software FIFO overwrite counter through
+	  SENSOR_ATTR_LIS2DH_FIFO_DROPPED. The value is reported in val1.
 
 config LIS2DH_FIFO_SW_QUEUE_SAMPLES
 	int "FIFO software queue size"

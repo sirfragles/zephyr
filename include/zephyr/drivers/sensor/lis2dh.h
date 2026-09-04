@@ -91,6 +91,8 @@ enum sensor_attribute_lis2dh {
 	 * Use a value from @ref lis2dh_self_test, passed in the sensor_value.val1 field.
 	 */
 	SENSOR_ATTR_LIS2DH_SELF_TEST = SENSOR_ATTR_PRIV_START,
+	/** Number of samples overwritten in the software FIFO queue. */
+	SENSOR_ATTR_LIS2DH_FIFO_DROPPED,
 };
 
 /**
