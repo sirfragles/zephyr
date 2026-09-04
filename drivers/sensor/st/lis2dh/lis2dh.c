@@ -206,21 +206,32 @@ static int lis2dh_sample_fetch(const struct device *dev,
 }
 
 #ifdef CONFIG_LIS2DH_ODR_RUNTIME
-/* 1620 & 5376 are low power only */
-static const uint16_t lis2dh_odr_map[] = {0, 1, 10, 25, 50, 100, 200, 400, 1620,
-				       1344, 5376};
-
-static int lis2dh_freq_to_odr_val(uint16_t freq)
+static int lis2dh_freq_to_odr_val(uint16_t freq, bool low_power)
 {
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(lis2dh_odr_map); i++) {
-		if (freq == lis2dh_odr_map[i]) {
-			return i;
-		}
+	switch (freq) {
+	case 1:
+		return LIS2DH_ODR_1;
+	case 10:
+		return LIS2DH_ODR_2;
+	case 25:
+		return LIS2DH_ODR_3;
+	case 50:
+		return LIS2DH_ODR_4;
+	case 100:
+		return LIS2DH_ODR_5;
+	case 200:
+		return LIS2DH_ODR_6;
+	case 400:
+		return LIS2DH_ODR_7;
+	case 1620:
+		return low_power ? LIS2DH_ODR_8 : -ENOTSUP;
+	case 1344:
+		return low_power ? -ENOTSUP : LIS2DH_ODR_9;
+	case 5376:
+		return low_power ? LIS2DH_ODR_9 : -ENOTSUP;
+	default:
+		return -EINVAL;
 	}
-
-	return -EINVAL;
 }
 
 static int lis2dh_acc_odr_set(const struct device *dev, uint16_t freq)
@@ -230,25 +241,15 @@ static int lis2dh_acc_odr_set(const struct device *dev, uint16_t freq)
 	uint8_t value;
 	struct lis2dh_data *data = dev->data;
 
-	odr = lis2dh_freq_to_odr_val(freq);
-	if (odr < 0) {
-		return odr;
-	}
-
 	status = data->hw_tf->read_reg(dev, LIS2DH_REG_CTRL1, &value);
 	if (status < 0) {
 		return status;
 	}
 
-	/* some odr values cannot be set in certain power modes */
-	if ((value & LIS2DH_LP_EN_BIT_MASK) == 0U && odr == LIS2DH_ODR_8) {
-		return -ENOTSUP;
-	}
-
-	/* adjust odr index for LP enabled mode, see table above */
-	if (((value & LIS2DH_LP_EN_BIT_MASK) == LIS2DH_LP_EN_BIT_MASK) &&
-		(odr == LIS2DH_ODR_9 + 1)) {
-		odr--;
+	odr = lis2dh_freq_to_odr_val(freq,
+			(value & LIS2DH_LP_EN_BIT_MASK) != 0U);
+	if (odr < 0) {
+		return odr;
 	}
 
 	return data->hw_tf->write_reg(dev, LIS2DH_REG_CTRL1,
