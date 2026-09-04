@@ -122,4 +122,30 @@ ZTEST(lis2dh_decoder, test_decode_full_fifo)
 	zassert_true(data->readings[0].x < data->readings[FIFO_SAMPLES - 1U].x);
 }
 
+ZTEST(lis2dh_decoder, test_timestamp_wraparound)
+{
+	uint8_t buffer[sizeof(struct lis2dh_encoded_header) +
+		2U * LIS2DH_ENCODED_SAMPLE_SIZE] = { 0 };
+	struct lis2dh_encoded_header *header = (struct lis2dh_encoded_header *)buffer;
+	struct sensor_three_axis_data data;
+	struct sensor_chan_spec channel = { SENSOR_CHAN_ACCEL_XYZ, 0 };
+	const struct sensor_decoder_api *decoder;
+	uint32_t fit = 0U;
+
+	header->timestamp_ns = UINT64_MAX - 50U;
+	header->period_ns = 100U;
+	header->scale = 1000000U;
+	header->sample_count = 2U;
+	header->shift = 5;
+	header->is_fifo = 1U;
+	put_sample(buffer, 0U, 0, 0, 0);
+	put_sample(buffer, 1U, 0x0010, 0, 0);
+
+	zassert_ok(lis2dh_get_decoder(NULL, &decoder));
+	zassert_equal(decoder->decode(buffer, channel, &fit, 2U, &data), 2);
+	zassert_equal(data.header.base_timestamp_ns, UINT64_MAX - 150U);
+	zassert_equal(data.readings[0].timestamp_delta, 0U);
+	zassert_equal(data.readings[1].timestamp_delta, 100U);
+}
+
 ZTEST_SUITE(lis2dh_decoder, NULL, NULL, NULL, NULL, NULL);
