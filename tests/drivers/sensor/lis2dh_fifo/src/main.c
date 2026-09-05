@@ -7,6 +7,7 @@
 
 #include <zephyr/drivers/gpio/gpio_emul.h>
 #include <zephyr/drivers/sensor/lis2dh.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/rtio/rtio.h>
 #include <zephyr/ztest.h>
@@ -171,7 +172,8 @@ ZTEST(lis2dh_fifo, test_start_rollback_every_bus_operation)
 
 		lis2dh_test_reset(emulators[i]);
 		zassert_ok(lis2dh_fifo_start(devices[i]));
-		operations = bus->operations;
+		/* Diagnostic readback is best-effort and tested separately. */
+		operations = bus->operations - bus->diagnostic_reads;
 		zassert_ok(lis2dh_fifo_stop(devices[i]));
 		for (unsigned int fail = 0; fail < operations; fail++) {
 			lis2dh_test_reset(emulators[i]);
@@ -181,6 +183,36 @@ ZTEST(lis2dh_fifo, test_start_rollback_every_bus_operation)
 			zassert_equal(bus->regs[LIS2DH_REG_CTRL3], 0);
 			zassert_equal(bus->regs[LIS2DH_REG_CTRL5] & LIS2DH_EN_FIFO, 0);
 			zassert_equal(bus->regs[LIS2DH_REG_FIFO_CTRL], 0);
+			zassert_ok(lis2dh_fifo_stop(devices[i]));
+		}
+	}
+}
+
+ZTEST(lis2dh_fifo, test_debug_readback_is_non_destructive_and_best_effort)
+{
+	unsigned int diagnostic_reads = IS_ENABLED(CONFIG_LOG) &&
+		CONFIG_SENSOR_LOG_LEVEL >= LOG_LEVEL_DBG ? 2U : 0U;
+
+	for (size_t i = 0U; i < ARRAY_SIZE(devices); i++) {
+		struct lis2dh_test_bus *bus = emulators[i]->data;
+		unsigned int start_operations;
+
+		lis2dh_test_reset(emulators[i]);
+		zassert_ok(lis2dh_fifo_start(devices[i]));
+		zassert_equal(bus->diagnostic_reads, diagnostic_reads);
+		zassert_equal(bus->bursts, 0U, "Diagnostic reads must not consume XYZ");
+		start_operations = bus->operations - bus->diagnostic_reads;
+		zassert_ok(lis2dh_fifo_stop(devices[i]));
+
+		for (unsigned int fail = 0U; fail < diagnostic_reads; fail++) {
+			lis2dh_test_reset(emulators[i]);
+			bus->fail_mask = BIT64(start_operations + fail);
+			zassert_ok(lis2dh_fifo_start(devices[i]));
+			zassert_true(lis2dh_fifo_is_active(devices[i]));
+			zassert_equal(bus->diagnostic_reads, diagnostic_reads);
+			zassert_equal(bus->bursts, 0U);
+			zassert_equal(bus->regs[LIS2DH_REG_FIFO_CTRL], 0x8f);
+			bus->fail_mask = 0U;
 			zassert_ok(lis2dh_fifo_stop(devices[i]));
 		}
 	}

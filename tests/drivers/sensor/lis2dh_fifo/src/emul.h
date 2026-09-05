@@ -15,6 +15,7 @@ struct lis2dh_test_bus {
 	bool fail_all;
 	unsigned int operations;
 	unsigned int reads;
+	unsigned int diagnostic_reads;
 	unsigned int writes;
 	unsigned int bursts;
 	unsigned int last_len;

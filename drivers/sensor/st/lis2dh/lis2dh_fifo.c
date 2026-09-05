@@ -189,6 +189,38 @@ static int lis2dh_fifo_restore(const struct device *dev, uint8_t ctrl3,
 	return first_error;
 }
 
+static void lis2dh_fifo_debug_registers(const struct device *dev)
+{
+	struct lis2dh_data *lis2dh = dev->data;
+	uint8_t ctrl[5];
+	uint8_t fifo[2];
+	int status;
+
+	if (!IS_ENABLED(CONFIG_LOG) || CONFIG_SENSOR_LOG_LEVEL < LOG_LEVEL_DBG) {
+		return;
+	}
+
+	/* Read only control/status registers, never XYZ or the HP reference.
+	 * Diagnostic failures do not change the result of FIFO start.
+	 */
+	status = lis2dh->hw_tf->read_data(dev, LIS2DH_REG_CTRL1, ctrl, sizeof(ctrl));
+	if (status == 0) {
+		LOG_DBG("%s: FIFO CTRL1=0x%02x CTRL2=0x%02x CTRL3=0x%02x",
+			dev->name, ctrl[0], ctrl[1], ctrl[2]);
+		LOG_DBG("%s: FIFO CTRL4=0x%02x CTRL5=0x%02x", dev->name, ctrl[3], ctrl[4]);
+	} else {
+		LOG_DBG("%s: FIFO diagnostic CTRL1..CTRL5 read failed: %d", dev->name, status);
+	}
+
+	status = lis2dh->hw_tf->read_data(dev, LIS2DH_REG_FIFO_CTRL, fifo, sizeof(fifo));
+	if (status == 0) {
+		LOG_DBG("%s: FIFO_CTRL=0x%02x FIFO_SRC=0x%02x", dev->name, fifo[0], fifo[1]);
+	} else {
+		LOG_DBG("%s: FIFO diagnostic FIFO_CTRL/FIFO_SRC read failed: %d",
+			dev->name, status);
+	}
+}
+
 int lis2dh_fifo_start(const struct device *dev)
 {
 	const struct lis2dh_config *cfg = dev->config;
@@ -290,9 +322,14 @@ int lis2dh_fifo_start(const struct device *dev)
 	}
 
 	lis2dh->fifo_restore_pending = false;
+	LOG_DBG("%s: FIFO started watermark=%u period=%llu ns INT1=%s.%u routes=0x%02x",
+		dev->name, cfg->fifo_watermark, (unsigned long long)lis2dh->fifo_period_ns,
+		cfg->gpio_drdy.port->name, cfg->gpio_drdy.pin, routes);
+	lis2dh_fifo_debug_registers(dev);
 	goto unlock;
 
 rollback:
+	LOG_DBG("%s: FIFO start failed: %d; restoring registers", dev->name, status);
 	atomic_clear(&lis2dh->fifo_active);
 	if (lis2dh->fifo_restore_pending) {
 		rollback_status = lis2dh_fifo_restore(dev, ctrl3, ctrl5, fifo_ctrl);
@@ -340,6 +377,8 @@ int lis2dh_fifo_stop(const struct device *dev)
 		lis2dh->fifo_faulted = status < 0;
 		lis2dh->fifo_restore_pending = status < 0;
 		lis2dh_fifo_clear(lis2dh);
+		LOG_DBG("%s: FIFO stop result=%d faulted=%u",
+			dev->name, status, lis2dh->fifo_faulted);
 	}
 #ifdef CONFIG_LIS2DH_STREAM
 	/* Complete only after cleanup; the executor may immediately reuse the SQE. */

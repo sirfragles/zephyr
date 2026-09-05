@@ -26,6 +26,7 @@ void lis2dh_test_reset(const struct emul *emul)
 	bus->fail_all = false;
 	bus->operations = 0U;
 	bus->reads = 0U;
+	bus->diagnostic_reads = 0U;
 	bus->writes = 0U;
 	bus->bursts = 0U;
 	bus->block_burst = false;
@@ -52,6 +53,10 @@ static int transfer(const struct emul *emul, uint8_t reg, uint8_t *bytes,
 	const struct lis2dh_test_config *cfg = emul->cfg;
 	unsigned int operation = bus->operations++;
 
+	if (read && ((reg == LIS2DH_REG_CTRL1 && len == 5U) ||
+		     (reg == LIS2DH_REG_FIFO_CTRL && len == 2U))) {
+		bus->diagnostic_reads++;
+	}
 	if (bus->fail_all || (operation < 64U && (bus->fail_mask & BIT64(operation)) != 0U)) {
 		return -EIO;
 	}

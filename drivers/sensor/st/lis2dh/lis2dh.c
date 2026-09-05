@@ -479,14 +479,17 @@ int lis2dh_init_chip(const struct device *dev)
 
 	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_WAI, &id);
 	if (status < 0) {
-		LOG_ERR("Failed to read chip id.");
+		LOG_ERR("%s: WHO_AM_I read failed: %d", dev->name, status);
 		return status;
 	}
 
 	if (id != LIS2DH_CHIP_ID) {
-		LOG_ERR("Invalid chip ID: %02x\n", id);
+		LOG_ERR("%s: Invalid chip ID: %02x (expected %02x)",
+			dev->name, id, LIS2DH_CHIP_ID);
 		return -EINVAL;
 	}
+	LOG_DBG("%s: chip ID OK: WHO_AM_I[0x%02x]=0x%02x",
+		dev->name, LIS2DH_REG_WAI, id);
 
 	/* Fix LSM303AGR_ACCEL device scale values */
 	if (cfg->hw.is_lsm303agr_dev) {
