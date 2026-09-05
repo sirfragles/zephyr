@@ -82,6 +82,46 @@ Build and flash the sample for HOLYIOT-25008:
    :goals: build flash
    :compact:
 
+Debug diagnostics
+*****************
+
+Enable the optional debug configuration when bringing up a board:
+
+.. code-block:: console
+
+   west build -b holyiot_25008/nrf54l15/cpuapp samples/sensor/lis2dh_fifo -- -DEXTRA_CONF_FILE=debug.conf
+
+The same configuration can be used with board ``xiao_ble/nrf52840``.
+Alternatively, set ``CONFIG_LOG=y`` and ``CONFIG_SENSOR_LOG_LEVEL_DBG=y``
+in the application configuration. The additional messages report:
+
+* SPI controller, requested clock frequency, mode, word size, bit order and CS;
+  or I2C controller and target address.
+* The actual SPI WHO_AM_I command and received byte, not buffer addresses.
+* A successful chip-ID check, or the received and expected IDs on mismatch.
+* FIFO watermark, sample period and INT1 routing at start, followed by readback
+  of CTRL1 through CTRL5, FIFO_CTRL and FIFO_SRC.
+* Start rollback and stop status.
+
+For example, the identification messages on SPI contain:
+
+.. code-block:: text
+
+   WHO_AM_I SPI TX command=0x8f, RX length=1
+   WHO_AM_I SPI RX=0x33
+   chip ID OK: WHO_AM_I[0x0f]=0x33
+
+The FIFO dump is best-effort: a failed diagnostic read is logged but does not
+turn a successful start into a failure. It uses two extra control/status reads
+only in builds with sensor DEBUG logging, under the driver mutex. It neither
+consumes XYZ samples nor reads the HP-filter reference register. These are
+register snapshots, not an automatic configuration self-test.
+
+No per-sample logging or FIFO payload hexdumps are added to the driver.
+Nevertheless, logging and readback add startup latency. Disable DEBUG for
+throughput/IRQ-latency measurements; software logs cannot validate physical
+SPI timing or replace a logic analyzer.
+
 Sample Output
 *************
 
