@@ -19,7 +19,7 @@ static int lis2dh_decoder_get_frame_count(const uint8_t *buffer,
 {
 	const struct lis2dh_encoded_header *header = (const struct lis2dh_encoded_header *)buffer;
 
-	if (chan_spec.chan_idx != 0U || frame_count == NULL) {
+	if (buffer == NULL || chan_spec.chan_idx != 0U || frame_count == NULL) {
 		return -EINVAL;
 	}
 
@@ -27,6 +27,9 @@ static int lis2dh_decoder_get_frame_count(const uint8_t *buffer,
 		return -ENOTSUP;
 	}
 
+	if (header->sample_count > 32U) {
+		return -EINVAL;
+	}
 	*frame_count = header->sample_count;
 	return 0;
 }
@@ -43,12 +46,12 @@ static int lis2dh_decoder_decode(const uint8_t *buffer, struct sensor_chan_spec 
 				  uint32_t *fit, uint16_t max_count, void *data_out)
 {
 	const struct lis2dh_encoded_header *header = (const struct lis2dh_encoded_header *)buffer;
-	const uint8_t *samples = buffer + sizeof(*header);
+	const uint8_t *samples;
 	struct sensor_three_axis_data *data = data_out;
 	uint16_t count;
 	uint16_t i;
 
-	if (chan_spec.chan_idx != 0U || fit == NULL || data_out == NULL) {
+	if (buffer == NULL || chan_spec.chan_idx != 0U || fit == NULL || data_out == NULL) {
 		return -EINVAL;
 	}
 
@@ -56,21 +59,30 @@ static int lis2dh_decoder_decode(const uint8_t *buffer, struct sensor_chan_spec 
 		return -ENOTSUP;
 	}
 
+	if (header->sample_count > 32U || header->shift < 0 || header->shift > 31 ||
+	    header->scale > 1000000U) {
+		return -EINVAL;
+	}
+	samples = buffer + sizeof(*header);
 	if (*fit >= header->sample_count || max_count == 0U) {
 		return 0;
 	}
 
 	count = MIN(max_count, header->sample_count - *fit);
+	/* Zephyr deltas are uint32_t nanoseconds: split slow-ODR batches. */
+	if (header->period_ns != 0U) {
+		count = MIN(count, UINT32_MAX / header->period_ns + 1U);
+	}
 	memset(data, 0, sizeof(*data) + (count - 1U) * sizeof(data->readings[0]));
 	data->header.base_timestamp_ns = header->timestamp_ns -
-		(header->sample_count - 1U) * header->period_ns;
+		(header->sample_count - 1U - *fit) * header->period_ns;
 	data->header.reading_count = count;
 	data->shift = header->shift;
 
 	for (i = 0U; i < count; i++) {
 		const uint8_t *sample = samples + (*fit + i) * LIS2DH_ENCODED_SAMPLE_SIZE;
 
-		data->readings[i].timestamp_delta = (*fit + i) * header->period_ns;
+		data->readings[i].timestamp_delta = i * header->period_ns;
 		data->readings[i].x = lis2dh_decode_accel((int16_t)sys_get_le16(sample),
 							  header->scale, header->shift);
 		data->readings[i].y = lis2dh_decode_accel((int16_t)sys_get_le16(sample + 2U),
@@ -88,7 +100,7 @@ static bool lis2dh_decoder_has_trigger(const uint8_t *buffer,
 {
 	const struct lis2dh_encoded_header *header = (const struct lis2dh_encoded_header *)buffer;
 
-	return header->is_fifo != 0U && header->trigger == trigger;
+	return buffer != NULL && header->is_fifo != 0U && header->trigger == trigger;
 }
 
 static int lis2dh_decoder_get_size_info(struct sensor_chan_spec channel, size_t *base_size,
@@ -117,6 +129,9 @@ SENSOR_DECODER_API_DT_DEFINE() = {
 int lis2dh_get_decoder(const struct device *dev, const struct sensor_decoder_api **decoder)
 {
 	ARG_UNUSED(dev);
+	if (decoder == NULL) {
+		return -EINVAL;
+	}
 	*decoder = &SENSOR_DECODER_NAME();
 
 	return 0;

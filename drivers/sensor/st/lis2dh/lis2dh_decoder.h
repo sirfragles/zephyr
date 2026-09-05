@@ -22,4 +22,15 @@ struct lis2dh_encoded_header {
 
 #define LIS2DH_ENCODED_SAMPLE_SIZE 6U
 
+static inline int8_t lis2dh_encoded_shift(uint32_t scale)
+{
+	uint64_t max_micro_ms2 = (uint64_t)scale * 2048U;
+	int8_t shift = 0;
+
+	while (max_micro_ms2 > (UINT64_C(1000000) << shift)) {
+		shift++;
+	}
+	return shift;
+}
+
 #endif /* ZEPHYR_DRIVERS_SENSOR_LIS2DH_DECODER_H_ */

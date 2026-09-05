@@ -53,6 +53,9 @@ static int lis2dh_fifo_period_ns(const struct device *dev, uint64_t *period_ns)
 		frequency_millihz = 400000U;
 		break;
 	case LIS2DH_ODR_8:
+		if ((ctrl1 & LIS2DH_LP_EN_BIT_MASK) == 0U) {
+			return -EINVAL;
+		}
 		frequency_millihz = 1620000U;
 		break;
 	case LIS2DH_ODR_9:
@@ -73,7 +76,6 @@ static void lis2dh_fifo_clear(struct lis2dh_data *lis2dh)
 	lis2dh->fifo_head = 0U;
 	lis2dh->fifo_tail = 0U;
 	lis2dh->fifo_count = 0U;
-	lis2dh->fifo_dropped_samples = 0U;
 	lis2dh->fifo_cache_valid = false;
 }
 
@@ -89,7 +91,11 @@ static void lis2dh_fifo_push(struct lis2dh_data *lis2dh, const int16_t xyz[3],
 	if (lis2dh->fifo_count == CONFIG_LIS2DH_FIFO_SW_QUEUE_SAMPLES) {
 		lis2dh->fifo_tail = (lis2dh->fifo_tail + 1U) %
 				     CONFIG_LIS2DH_FIFO_SW_QUEUE_SAMPLES;
-		lis2dh->fifo_dropped_samples++;
+#ifdef CONFIG_LIS2DH_FIFO_STATS
+		if (lis2dh->fifo_dropped_samples < INT32_MAX) {
+			lis2dh->fifo_dropped_samples++;
+		}
+#endif
 	} else {
 		lis2dh->fifo_count++;
 	}
@@ -108,11 +114,10 @@ int lis2dh_fifo_init(const struct device *dev)
 {
 	struct lis2dh_data *lis2dh = dev->data;
 
-	k_mutex_init(&lis2dh->fifo_lock);
 	lis2dh_fifo_clear(lis2dh);
 	atomic_clear(&lis2dh->fifo_active);
 #ifdef CONFIG_LIS2DH_STREAM
-	atomic_clear(&lis2dh->stream_active);
+	lis2dh_stream_init(dev);
 #endif
 
 	return 0;
@@ -125,11 +130,11 @@ bool lis2dh_fifo_is_active(const struct device *dev)
 	return atomic_get(&lis2dh->fifo_active) != 0;
 }
 
-void lis2dh_fifo_irq_timestamp(const struct device *dev)
+bool lis2dh_fifo_is_busy(const struct device *dev)
 {
-	struct lis2dh_data *lis2dh = dev->data;
+	const struct lis2dh_data *lis2dh = dev->data;
 
-	lis2dh->fifo_irq_timestamp_ns = k_cyc_to_ns_floor64(k_cycle_get_64());
+	return lis2dh_fifo_is_active(dev) || lis2dh->fifo_faulted;
 }
 
 static int lis2dh_fifo_restore(const struct device *dev, uint8_t ctrl3,
@@ -191,7 +196,7 @@ int lis2dh_fifo_start(const struct device *dev)
 	uint8_t ctrl3;
 	uint8_t ctrl5;
 	uint8_t fifo_ctrl;
-	bool registers_changed = false;
+	uint8_t routes = LIS2DH_EN_FIFO_WTM_INT1 | LIS2DH_EN_FIFO_OVRN_INT1;
 	int rollback_status;
 	int status;
 
@@ -199,9 +204,9 @@ int lis2dh_fifo_start(const struct device *dev)
 		return -ENOTSUP;
 	}
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 
-	if (lis2dh_fifo_is_active(dev)) {
+	if (lis2dh_fifo_is_busy(dev)) {
 		status = -EBUSY;
 		goto unlock;
 	}
@@ -230,6 +235,10 @@ int lis2dh_fifo_start(const struct device *dev)
 		goto unlock;
 	}
 
+	lis2dh->fifo_saved[0] = ctrl3;
+	lis2dh->fifo_saved[1] = ctrl5;
+	lis2dh->fifo_saved[2] = fifo_ctrl;
+
 	status = lis2dh_fifo_period_ns(dev, &lis2dh->fifo_period_ns);
 	if (status < 0) {
 		goto unlock;
@@ -240,21 +249,19 @@ int lis2dh_fifo_start(const struct device *dev)
 		goto unlock;
 	}
 
-	registers_changed = true;
+	lis2dh->fifo_restore_pending = true;
 	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL,
 					  LIS2DH_FIFO_MODE_BYPASS);
 	if (status < 0) {
 		goto rollback;
 	}
 
-	registers_changed = true;
 	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL5, LIS2DH_EN_FIFO,
 					   LIS2DH_EN_FIFO);
 	if (status < 0) {
 		goto rollback;
 	}
 
-	registers_changed = true;
 	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL,
 					  LIS2DH_FIFO_MODE_STREAM |
 					  (cfg->fifo_watermark - 1U));
@@ -262,38 +269,42 @@ int lis2dh_fifo_start(const struct device *dev)
 		goto rollback;
 	}
 
-	registers_changed = true;
+#ifdef CONFIG_LIS2DH_STREAM
+	if (lis2dh->stream_active) {
+		routes = lis2dh->stream_routes;
+	}
+#endif
 	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL3,
-					   LIS2DH_EN_FIFO_WTM_INT1 |
-					   LIS2DH_EN_FIFO_OVRN_INT1,
-					   LIS2DH_EN_FIFO_WTM_INT1 |
-					  LIS2DH_EN_FIFO_OVRN_INT1);
+					 LIS2DH_EN_FIFO_WTM_INT1 | LIS2DH_EN_FIFO_OVRN_INT1,
+					 routes);
 	if (status < 0) {
 		goto rollback;
 	}
 
 	lis2dh_fifo_clear(lis2dh);
 	atomic_set(&lis2dh->fifo_active, 1);
-	lis2dh_fifo_irq_timestamp(dev);
-	status = lis2dh_trigger_int1_set(dev, true);
+	status = lis2dh_trigger_fifo_int1_set(dev, true);
 	if (status < 0) {
 		atomic_clear(&lis2dh->fifo_active);
 		goto rollback;
 	}
 
+	lis2dh->fifo_restore_pending = false;
 	goto unlock;
 
 rollback:
 	atomic_clear(&lis2dh->fifo_active);
-	if (registers_changed) {
+	if (lis2dh->fifo_restore_pending) {
 		rollback_status = lis2dh_fifo_restore(dev, ctrl3, ctrl5, fifo_ctrl);
+		lis2dh->fifo_faulted = rollback_status < 0;
+		lis2dh->fifo_restore_pending = rollback_status < 0;
 		if (rollback_status < 0) {
 			LOG_ERR("FIFO start rollback failed: %d", rollback_status);
 		}
 	}
 
 unlock:
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return status;
 }
@@ -301,52 +312,43 @@ unlock:
 int lis2dh_fifo_stop(const struct device *dev)
 {
 	struct lis2dh_data *lis2dh = dev->data;
-	bool was_active;
-	int first_error = 0;
-	int status;
-
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
-
-	was_active = lis2dh_fifo_is_active(dev);
-	atomic_clear(&lis2dh->fifo_active);
+	int status = 0;
 #ifdef CONFIG_LIS2DH_STREAM
-	atomic_clear(&lis2dh->stream_active);
-	if (lis2dh->streaming_sqe != NULL) {
-		rtio_iodev_sqe_err(lis2dh->streaming_sqe, -ECANCELED);
-	}
-	lis2dh->streaming_sqe = NULL;
+	struct rtio_iodev_sqe *sqe;
 #endif
-	if (!was_active) {
-		goto unlock;
+
+	lis2dh_lock(dev);
+#ifdef CONFIG_LIS2DH_STREAM
+	sqe = lis2dh->streaming_sqe;
+	lis2dh->streaming_sqe = NULL;
+	lis2dh->stream_active = false;
+	lis2dh->stream_iodev = NULL;
+	lis2dh->stream_nop_events = 0U;
+	(void)k_work_cancel_delayable(&lis2dh->stream_work);
+#endif
+	if (lis2dh_fifo_is_busy(dev)) {
+		atomic_clear(&lis2dh->fifo_active);
+		if (!lis2dh->fifo_restore_pending) {
+			/* INT1 was unowned at start; preserve unrelated register bits. */
+			lis2dh->fifo_saved[0] &= ~(LIS2DH_EN_FIFO_WTM_INT1 |
+						 LIS2DH_EN_FIFO_OVRN_INT1);
+			lis2dh->fifo_saved[1] &= ~LIS2DH_EN_FIFO;
+			lis2dh->fifo_saved[2] = LIS2DH_FIFO_MODE_BYPASS;
+		}
+		status = lis2dh_fifo_restore(dev, lis2dh->fifo_saved[0],
+					     lis2dh->fifo_saved[1], lis2dh->fifo_saved[2]);
+		lis2dh->fifo_faulted = status < 0;
+		lis2dh->fifo_restore_pending = status < 0;
+		lis2dh_fifo_clear(lis2dh);
 	}
-	status = lis2dh_trigger_int1_set(dev, false);
-	if (status < 0) {
-		first_error = status;
+#ifdef CONFIG_LIS2DH_STREAM
+	/* Complete only after cleanup; the executor may immediately reuse the SQE. */
+	if (sqe != NULL) {
+		rtio_iodev_sqe_err(sqe, status < 0 ? status : -ECANCELED);
 	}
-
-	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL3,
-					   LIS2DH_EN_FIFO_WTM_INT1 |
-					   LIS2DH_EN_FIFO_OVRN_INT1, 0U);
-	if (status < 0 && first_error == 0) {
-		first_error = status;
-	}
-
-	status = lis2dh->hw_tf->write_reg(dev, LIS2DH_REG_FIFO_CTRL, LIS2DH_FIFO_MODE_BYPASS);
-	if (status < 0 && first_error == 0) {
-		first_error = status;
-	}
-
-	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL5, LIS2DH_EN_FIFO, 0U);
-	if (status < 0 && first_error == 0) {
-		first_error = status;
-	}
-
-	lis2dh_fifo_clear(lis2dh);
-
-unlock:
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
-
-	return first_error;
+#endif
+	lis2dh_unlock(dev);
+	return status;
 }
 
 #ifdef CONFIG_LIS2DH_STREAM
@@ -356,7 +358,7 @@ int lis2dh_fifo_drop(const struct device *dev)
 	struct lis2dh_data *lis2dh = dev->data;
 	int status;
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (!lis2dh_fifo_is_active(dev)) {
 		status = -EACCES;
 		goto unlock;
@@ -375,7 +377,7 @@ int lis2dh_fifo_drop(const struct device *dev)
 	}
 
 unlock:
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return status;
 }
@@ -386,11 +388,11 @@ int lis2dh_fifo_sample_fetch(const struct device *dev)
 	struct lis2dh_data *lis2dh = dev->data;
 	int status = 0;
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (!lis2dh->fifo_cache_valid) {
 		status = -ENODATA;
 	}
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return status;
 }
@@ -400,13 +402,13 @@ int lis2dh_fifo_cache_copy(const struct device *dev, union lis2dh_sample *sample
 	struct lis2dh_data *lis2dh = dev->data;
 	int status = 0;
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (!lis2dh_fifo_is_active(dev) || !lis2dh->fifo_cache_valid) {
 		status = -ENODATA;
 	} else {
 		memcpy(sample, &lis2dh->sample, sizeof(*sample));
 	}
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return status;
 }
@@ -422,9 +424,9 @@ int lis2dh_fifo_read(const struct device *dev, struct lis2dh_fifo_sample *sample
 		return -EINVAL;
 	}
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (!lis2dh_fifo_is_active(dev)) {
-		(void)k_mutex_unlock(&lis2dh->fifo_lock);
+		lis2dh_unlock(dev);
 		return -EACCES;
 	}
 
@@ -443,7 +445,7 @@ int lis2dh_fifo_read(const struct device *dev, struct lis2dh_fifo_sample *sample
 	}
 	*count = sample_count;
 
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return 0;
 }
@@ -457,7 +459,7 @@ int lis2dh_fifo_trigger_set(const struct device *dev, const struct sensor_trigge
 		return -ENOTSUP;
 	}
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (trig->type == SENSOR_TRIG_FIFO_WATERMARK) {
 		lis2dh->fifo_handler_watermark = handler;
 		lis2dh->fifo_trig_watermark = trig;
@@ -465,10 +467,10 @@ int lis2dh_fifo_trigger_set(const struct device *dev, const struct sensor_trigge
 		lis2dh->fifo_handler_full = handler;
 		lis2dh->fifo_trig_full = trig;
 	} else {
-		(void)k_mutex_unlock(&lis2dh->fifo_lock);
+		lis2dh_unlock(dev);
 		return -ENOTSUP;
 	}
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
+	lis2dh_unlock(dev);
 
 	return 0;
 }
@@ -482,118 +484,69 @@ int lis2dh_fifo_handle_irq(const struct device *dev)
 	uint8_t src;
 	uint8_t sample_count;
 	uint64_t timestamp_ns;
-	bool drop = false;
-	bool stop_stream = false;
-	bool overrun;
-#ifdef CONFIG_LIS2DH_STREAM
-	struct rtio_iodev_sqe *stream_sqe = NULL;
-#endif
-	int status;
-	size_t i;
+	int status = 0;
 
-	(void)k_mutex_lock(&lis2dh->fifo_lock, K_FOREVER);
+	lis2dh_lock(dev);
 	if (!lis2dh_fifo_is_active(dev)) {
-		(void)k_mutex_unlock(&lis2dh->fifo_lock);
-		return 0;
+		goto unlock;
 	}
-
+#ifdef CONFIG_LIS2DH_STREAM
+	if (lis2dh->stream_active) {
+		status = lis2dh_stream_handle_irq(dev);
+		goto unlock;
+	}
+#endif
 	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_FIFO_SRC, &src);
 	if (status < 0) {
-		goto unlock;
+		goto finish;
 	}
-
+	timestamp_ns = lis2dh_timestamp_ns();
 	if ((src & LIS2DH_FIFO_EMPTY) != 0U) {
-		status = 0;
-		goto unlock;
+		goto finish;
 	}
-
-	overrun = (src & LIS2DH_FIFO_OVRN) != 0U;
-	sample_count = overrun ? LIS2DH_FIFO_MAX_SAMPLES : src & LIS2DH_FIFO_FSS_MASK;
+	sample_count = (src & LIS2DH_FIFO_OVRN) != 0U ?
+		LIS2DH_FIFO_MAX_SAMPLES : src & LIS2DH_FIFO_FSS_MASK;
 	if (sample_count == 0U) {
-		status = 0;
-		goto unlock;
+		goto finish;
 	}
-
 	status = lis2dh->hw_tf->read_data(dev, LIS2DH_REG_ACCEL_X_LSB, raw,
-					  sample_count * LIS2DH_FIFO_SAMPLE_SIZE);
+					 sample_count * LIS2DH_FIFO_SAMPLE_SIZE);
 	if (status < 0) {
-		goto unlock;
-	}
-
-	timestamp_ns = lis2dh->fifo_irq_timestamp_ns;
-	if (timestamp_ns == 0U) {
-		timestamp_ns = k_cyc_to_ns_floor64(k_cycle_get_64());
+		goto finish;
 	}
 	timestamp_ns -= (sample_count - 1U) * lis2dh->fifo_period_ns;
-
-	for (i = 0U; i < sample_count; i++) {
+	for (size_t i = 0U; i < sample_count; i++) {
 		int16_t xyz[3];
-		size_t axis;
 
-		for (axis = 0U; axis < ARRAY_SIZE(xyz); axis++) {
+		for (size_t axis = 0U; axis < ARRAY_SIZE(xyz); axis++) {
 			xyz[axis] = (int16_t)sys_get_le16(&raw[i * LIS2DH_FIFO_SAMPLE_SIZE +
-								      axis * sizeof(int16_t)]);
+							     axis * sizeof(int16_t)]);
 		}
 		lis2dh_fifo_push(lis2dh, xyz, timestamp_ns);
+		memcpy(lis2dh->sample.xyz, xyz, sizeof(xyz));
 		timestamp_ns += lis2dh->fifo_period_ns;
 	}
-
-	memcpy(lis2dh->sample.xyz, lis2dh->fifo_samples[
-		(lis2dh->fifo_head + CONFIG_LIS2DH_FIFO_SW_QUEUE_SAMPLES - 1U) %
-		CONFIG_LIS2DH_FIFO_SW_QUEUE_SAMPLES].xyz, sizeof(lis2dh->sample.xyz));
 	lis2dh->sample.status = LIS2DH_STATUS_ZYX_DRDY;
 	lis2dh->fifo_cache_valid = true;
-
-	if (overrun && lis2dh->fifo_handler_full != NULL) {
+	if ((src & LIS2DH_FIFO_OVRN) != 0U && lis2dh->fifo_handler_full != NULL) {
 		handler = lis2dh->fifo_handler_full;
 		trig = lis2dh->fifo_trig_full;
-	} else if ((src & LIS2DH_FIFO_WTM) != 0U &&
-		   lis2dh->fifo_handler_watermark != NULL) {
+	} else if ((src & LIS2DH_FIFO_WTM) != 0U) {
 		handler = lis2dh->fifo_handler_watermark;
 		trig = lis2dh->fifo_trig_watermark;
 	}
 
-#ifdef CONFIG_LIS2DH_STREAM
-	status = lis2dh_stream_handle_irq(dev, src, raw, sample_count,
-					 timestamp_ns - lis2dh->fifo_period_ns, &drop);
-	if (status == -ECANCELED) {
-		status = 0;
-		stop_stream = true;
+finish:
+	if (status == 0) {
+		status = lis2dh_trigger_fifo_int1_set(dev, true);
 	}
-#endif
-
+	if (status < 0) {
+		(void)lis2dh_fifo_stop(dev);
+	}
 unlock:
-#ifdef CONFIG_LIS2DH_STREAM
-	if (status < 0 && lis2dh->streaming_sqe != NULL) {
-		stream_sqe = lis2dh->streaming_sqe;
-		lis2dh->streaming_sqe = NULL;
-		atomic_clear(&lis2dh->stream_active);
-		rtio_iodev_sqe_err(stream_sqe, status);
-		stop_stream = true;
-	}
-#endif
-	(void)k_mutex_unlock(&lis2dh->fifo_lock);
-
-#ifdef CONFIG_LIS2DH_STREAM
-	if (drop) {
-		int drop_status = lis2dh_fifo_drop(dev);
-
-		if (status == 0 && drop_status < 0) {
-			status = drop_status;
-		}
-	}
-	if (stop_stream) {
-		int stop_status = lis2dh_fifo_stop(dev);
-
-		if (status == 0 && stop_status < 0) {
-			status = stop_status;
-		}
-	}
-#endif
-
+	lis2dh_unlock(dev);
 	if (status == 0 && handler != NULL) {
 		handler(dev, trig);
 	}
-
 	return status;
 }

@@ -164,7 +164,7 @@
 
 #define LIS2DH_REG_FIFO_CTRL		0x2E
 #define LIS2DH_FIFO_MODE_BYPASS	0U
-#define LIS2DH_FIFO_MODE_STREAM	BIT(6)
+#define LIS2DH_FIFO_MODE_STREAM	BIT(7)
 #define LIS2DH_FIFO_FTH_MASK		BIT_MASK(5)
 
 #define LIS2DH_REG_FIFO_SRC		0x2F
@@ -291,8 +291,11 @@ struct lis2dh_data {
 
 	uint8_t reg_ctrl1_active_val;
 
+#if defined(CONFIG_LIS2DH_FIFO) || defined(CONFIG_SENSOR_ASYNC_API)
+	/* Serializes register accesses and state transitions, including RTIO. */
+	struct k_mutex lock;
+#endif
 #ifdef CONFIG_LIS2DH_FIFO
-	struct k_mutex fifo_lock;
 	struct {
 		int16_t xyz[3];
 		uint64_t timestamp_ns;
@@ -300,10 +303,14 @@ struct lis2dh_data {
 	uint16_t fifo_head;
 	uint16_t fifo_tail;
 	uint16_t fifo_count;
+#ifdef CONFIG_LIS2DH_FIFO_STATS
 	uint32_t fifo_dropped_samples;
-	uint64_t fifo_irq_timestamp_ns;
+#endif
 	uint64_t fifo_period_ns;
 	atomic_t fifo_active;
+	bool fifo_faulted;
+	bool fifo_restore_pending;
+	uint8_t fifo_saved[3];
 	bool fifo_cache_valid;
 	sensor_trigger_handler_t fifo_handler_watermark;
 	const struct sensor_trigger *fifo_trig_watermark;
@@ -311,7 +318,13 @@ struct lis2dh_data {
 	const struct sensor_trigger *fifo_trig_full;
 #ifdef CONFIG_LIS2DH_STREAM
 	struct rtio_iodev_sqe *streaming_sqe;
-	atomic_t stream_active;
+	bool stream_active;
+	const struct rtio_iodev *stream_iodev;
+	atomic_ptr_t stream_handoff;
+	atomic_ptr_t stream_pending;
+	uint8_t stream_routes;
+	uint8_t stream_nop_events;
+	struct k_work_delayable stream_work;
 #endif
 #endif
 
@@ -340,6 +353,38 @@ struct lis2dh_data {
 #endif /* CONFIG_LIS2DH_TRIGGER */
 };
 
+static inline void lis2dh_lock(const struct device *dev)
+{
+#if defined(CONFIG_LIS2DH_FIFO) || defined(CONFIG_SENSOR_ASYNC_API)
+	struct lis2dh_data *data = dev->data;
+
+	(void)k_mutex_lock(&data->lock, K_FOREVER);
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
+static inline void lis2dh_unlock(const struct device *dev)
+{
+#if defined(CONFIG_LIS2DH_FIFO) || defined(CONFIG_SENSOR_ASYNC_API)
+	struct lis2dh_data *data = dev->data;
+
+	(void)k_mutex_unlock(&data->lock);
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
+static inline uint64_t lis2dh_timestamp_ns(void)
+{
+#ifdef CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER
+	return k_cyc_to_ns_floor64(k_cycle_get_64());
+#else
+	/* Uptime extends narrow hardware counters across wraps. */
+	return k_ticks_to_ns_floor64(k_uptime_ticks());
+#endif
+}
+
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 int lis2dh_spi_access(struct lis2dh_data *ctx, uint8_t cmd,
 		      void *data, size_t length);
@@ -357,15 +402,16 @@ int lis2dh_acc_slope_config(const struct device *dev,
 			    const struct sensor_value *val);
 
 int lis2dh_trigger_int1_set(const struct device *dev, bool enable);
+int lis2dh_trigger_fifo_int1_set(const struct device *dev, bool enable);
 #endif
 
 #ifdef CONFIG_LIS2DH_FIFO
 int lis2dh_fifo_init(const struct device *dev);
 bool lis2dh_fifo_is_active(const struct device *dev);
+bool lis2dh_fifo_is_busy(const struct device *dev);
 int lis2dh_fifo_start(const struct device *dev);
 int lis2dh_fifo_stop(const struct device *dev);
 int lis2dh_fifo_handle_irq(const struct device *dev);
-void lis2dh_fifo_irq_timestamp(const struct device *dev);
 int lis2dh_fifo_trigger_set(const struct device *dev,
 			    const struct sensor_trigger *trig,
 			    sensor_trigger_handler_t handler);
@@ -373,9 +419,8 @@ int lis2dh_fifo_sample_fetch(const struct device *dev);
 int lis2dh_fifo_cache_copy(const struct device *dev, union lis2dh_sample *sample);
 #ifdef CONFIG_LIS2DH_STREAM
 int lis2dh_fifo_drop(const struct device *dev);
-int lis2dh_stream_handle_irq(const struct device *dev, uint8_t fifo_src,
-			     const uint8_t *raw, uint8_t sample_count, uint64_t timestamp_ns,
-			     bool *drop);
+void lis2dh_stream_init(const struct device *dev);
+int lis2dh_stream_handle_irq(const struct device *dev);
 void lis2dh_stream_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe);
 #endif
 #endif

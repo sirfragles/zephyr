@@ -47,6 +47,9 @@ int lis2dh_fifo_start(const struct device *dev);
 /**
  * @brief Stop hardware FIFO streaming and discard queued samples.
  *
+ * After a bus or GPIO error, call again to retry cleanup. New starts and
+ * register configuration are rejected until cleanup succeeds.
+ *
  * @param dev LIS2DH device.
  *
  * @retval 0 FIFO streaming stopped.
@@ -91,7 +94,11 @@ enum sensor_attribute_lis2dh {
 	 * Use a value from @ref lis2dh_self_test, passed in the sensor_value.val1 field.
 	 */
 	SENSOR_ATTR_LIS2DH_SELF_TEST = SENSOR_ATTR_PRIV_START,
-	/** Number of samples overwritten in the software FIFO queue. */
+	/**
+	 * Lifetime software queue overwrite count, saturating at INT32_MAX.
+	 * Requires CONFIG_LIS2DH_FIFO_STATS. Does not count hardware losses
+	 * or RTIO delivery losses; start/stop/drop do not reset the count.
+	 */
 	SENSOR_ATTR_LIS2DH_FIFO_DROPPED,
 };
 

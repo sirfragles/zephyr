@@ -45,7 +45,7 @@ config LIS2DH_FIFO
 	bool "FIFO support"
 	depends on LIS2DH_TRIGGER
 	depends on $(dt_compat_any_has_prop,$(DT_COMPAT_ST_LIS2DH),fifo-watermark)
-		help
+	help
 	  Enable hardware FIFO support for LIS2DH sensors with an INT1 GPIO.
 
 config LIS2DH_FIFO_STATS
@@ -53,7 +53,9 @@ config LIS2DH_FIFO_STATS
 	depends on LIS2DH_FIFO
 	help
 	  Expose the software FIFO overwrite counter through
-	  SENSOR_ATTR_LIS2DH_FIFO_DROPPED. The value is reported in val1.
+	  SENSOR_ATTR_LIS2DH_FIFO_DROPPED. The lifetime count saturates at
+	  INT32_MAX and is reported in val1. It counts only overwritten samples
+	  in the classic software queue, not hardware losses or RTIO deliveries.
 
 config LIS2DH_FIFO_SW_QUEUE_SAMPLES
 	int "FIFO software queue size"
@@ -135,7 +137,7 @@ choice LIS2DH_ODR
 	  Supported values:
 	  1Hz, 10Hz, 25Hz, 50Hz, 100Hz, 200Hz, 400Hz in all power modes
 	  1620Hz, 5376Hz in low power mode only
-	  1344Hz in normal power mode
+	  1344Hz in normal and high resolution modes
 
 config LIS2DH_ODR_RUNTIME
 	bool "Set at runtime"
@@ -162,15 +164,15 @@ config LIS2DH_ODR_7
 	bool "400Hz"
 
 config LIS2DH_ODR_8
-	bool "1.6KHz"
+	bool "1620 Hz"
 	depends on LIS2DH_OPER_MODE_LOW_POWER
 
 config LIS2DH_ODR_9_NORMAL
-	bool "1.25KHz"
+	bool "1344 Hz"
 	depends on LIS2DH_OPER_MODE_NORMAL || LIS2DH_OPER_MODE_HIGH_RES
 
 config LIS2DH_ODR_9_LOW
-	bool "5KHz"
+	bool "5376 Hz"
 	depends on LIS2DH_OPER_MODE_LOW_POWER
 
 endchoice
