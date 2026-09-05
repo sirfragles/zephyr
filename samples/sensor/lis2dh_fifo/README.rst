@@ -2,7 +2,7 @@
    :name: LIS2DH FIFO streaming
    :relevant-api: sensor_interface
 
-   Drain LIS2DH hardware FIFO batches using the standard Sensor trigger API.
+   Drain LIS2DH hardware FIFO batches using Sensor Async API and RTIO.
 
 Overview
 ********
@@ -16,6 +16,60 @@ raw frames into accelerometer samples with timestamps.
 The supplied HOLYIOT-25008 overlay sets the FIFO watermark to 16 samples. The
 board routes LIS2DH INT1 to GPIO2.0 and uses SPI mode 3, which is selected by
 the LIS2DH driver.
+
+The XIAO nRF52840 overlay uses an external LIS2DH12 on I2C: SDA on D4,
+SCL on D5, INT1 on D0, address 0x18. It does not use the Sense board's IMU.
+Build this configuration with board ``xiao_ble/nrf52840``.
+
+Operation and recovery
+**********************
+
+FIFO uses stream mode (FM[7:6] = 10). INCLUDE reads all reported XYZ frames
+in one bus transaction. DROP clears FIFO through bypass before completing.
+NOP returns an event without reading XYZ; the still-asserted event is masked
+until an INCLUDE/DROP request or stream restart. A FULL-only subscription
+routes only the full interrupt, so watermark does not drain data early.
+
+The classic software queue and RTIO are alternative consumers. RTIO does not
+also fill that queue, but updates the latest-XYZ cache for the synchronous API.
+Temperature remains a separate synchronous read, including with
+``sensor_sample_fetch()`` during FIFO operation; the decoder supports XYZ only.
+DATA_READY, ODR/range changes and power management return ``-EBUSY`` while FIFO
+owns INT1. Register operations and lifecycle changes share a mutex.
+
+Cancellation is checked in deferred work even if no sensor interrupt arrives.
+After a bus/GPIO cleanup error the device remains faulted: retry
+``lis2dh_fifo_stop()`` until it succeeds before starting or reconfiguring.
+Persistent hardware faults cannot be repaired by software rollback alone.
+
+Timestamps are host estimates at the FIFO status read, reconstructed using
+the configured ODR, not hardware timestamps. Platforms with narrow cycle
+counters use 64-bit uptime ticks. The decoder rebases each returned batch and
+may return fewer frames than requested to keep nanosecond deltas within
+32 bits (for example, five frames per decode call at 1 Hz).
+
+``CONFIG_LIS2DH_FIFO_STATS`` counts only overwrites of the classic software
+queue. The lifetime counter saturates at INT32_MAX; start/stop/drop do not
+reset it. It cannot measure hardware sample loss or RTIO backlog.
+
+Timing limits and hardware validation
+************************************
+
+At 5376 Hz the 32-frame FIFO fills in about 5.95 ms. A 192-byte I2C transfer
+requires at least about 4.4 ms at 400 kHz, before scheduling overhead.
+Use SPI for evaluating this rate. Increasing watermark reduces free slots:
+at 16, nominal headroom is about 2.98 ms; at 32, the next sample arrives
+about 186 microseconds later. Select watermark from measured worst-case IRQ
+and bus latency, not solely from transfer efficiency.
+
+These estimates follow the FIFO depth and rates in the
+`LIS2DH12 datasheet <https://www.st.com/resource/en/datasheet/lis2dh12.pdf>`_.
+Native tests validate driver logic and transaction sizes, not physical
+signals. Before deployment verify WHO_AM_I = 0x33, SPI mode 3 and CS continuity
+for command 0xe8 plus 192 received bytes, watermark/full behavior, all required
+ODR/mode combinations, and sustained operation with application/BLE load.
+Repeat on I2C and SPI and test recovery from disconnected hardware.
+
 
 Building and Running
 ********************
@@ -33,6 +87,6 @@ Sample Output
 
 .. code-block:: console
 
-   LIS2DH FIFO streaming started
+   LIS2DH Sensor Async FIFO stream started
    123456789 ns: (0.010763, -0.004785, 9.801000) m/s^2
    133456789 ns: (0.015548, -0.009570, 9.796215) m/s^2
