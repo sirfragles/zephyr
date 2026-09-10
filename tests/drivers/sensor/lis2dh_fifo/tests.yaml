@@ -1,0 +1,7 @@
+tests:
+  drivers.sensor.lis2dh_fifo.decoder:
+    tags:
+      - drivers
+      - sensor
+    platform_allow:
+      - native_sim/native/64

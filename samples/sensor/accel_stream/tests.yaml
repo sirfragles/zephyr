@@ -46,6 +46,12 @@ tests:
       - SNIPPET="rtt-tracing;rtt-console"
     platform_allow:
       - apard32690/max32690/m4
+  sample.sensor.accel_stream.lis2dh-stream:
+    build_only: true
+    extra_args:
+      - EXTRA_CONF_FILE=lis2dh-stream.conf
+    platform_allow:
+      - holyiot_25008/nrf54l15/cpuapp
   sample.sensor.accel_stream.shields:
     build_only: true
     platform_allow:

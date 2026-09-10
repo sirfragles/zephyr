@@ -21,7 +21,7 @@
 LOG_MODULE_DECLARE(lis2dh, CONFIG_SENSOR_LOG_LEVEL);
 
 static int lis2dh_i2c_read_data(const struct device *dev, uint8_t reg_addr,
-				 uint8_t *value, uint8_t len)
+				 uint8_t *value, size_t len)
 {
 	const struct lis2dh_config *cfg = dev->config;
 
@@ -30,7 +30,7 @@ static int lis2dh_i2c_read_data(const struct device *dev, uint8_t reg_addr,
 }
 
 static int lis2dh_i2c_write_data(const struct device *dev, uint8_t reg_addr,
-				  uint8_t *value, uint8_t len)
+				  uint8_t *value, size_t len)
 {
 	const struct lis2dh_config *cfg = dev->config;
 

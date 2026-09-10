@@ -10,6 +10,7 @@ menuconfig LIS2DH
 	select I2C if $(dt_compat_on_bus,$(DT_COMPAT_ST_LIS2DH),i2c)
 	select SPI if $(dt_compat_on_bus,$(DT_COMPAT_ST_LIS2DH),spi)
 	select GPIO if $(dt_compat_any_has_prop,$(DT_COMPAT_ST_LIS2DH),irq-gpios)
+	select RTIO_WORKQ if SENSOR_ASYNC_API
 	help
 	  Enable SPI/I2C-based driver for LIS2DH, LIS3DH, LSM303DLHC,
 	  LIS2DH12, LSM303AGR triaxial accelerometer sensors.
@@ -40,6 +41,15 @@ endchoice
 
 config LIS2DH_TRIGGER
 	bool
+
+config LIS2DH_STREAM
+	bool "FIFO streaming via sensor_stream()"
+	depends on SENSOR_ASYNC_API
+	depends on LIS2DH_TRIGGER
+	help
+	  Enable asynchronous FIFO streaming with FIFO watermark and FIFO full
+	  triggers. The first interrupt line must be connected and one of the
+	  trigger thread modes above must be selected.
 
 config LIS2DH_THREAD_PRIORITY
 	int "Thread priority"
