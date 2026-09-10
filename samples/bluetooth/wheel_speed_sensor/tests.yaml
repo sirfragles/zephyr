@@ -1,0 +1,12 @@
+sample:
+  name: LIS2DH12 BLE wheel speed sensor with MCUboot DFU
+  description: Hub-mounted wheel speed sensor using LIS2DH12 FIFO and BLE CSC
+tests:
+  sample.bluetooth.wheel_speed_sensor:
+    build_only: true
+    platform_allow:
+      - holyiot_25008/nrf54l15/cpuapp
+    tags:
+      - bluetooth
+      - sensor
+      - mcuboot
