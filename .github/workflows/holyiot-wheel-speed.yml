@@ -118,7 +118,7 @@ jobs:
         working-directory: zephyr
         run: |
           mkdir -p firmware/initial-swd firmware/ble-dfu firmware/debug
-          cp build-wheel/merged.hex \
+          cp build-wheel/merged_holyiot_25008_nrf54l15_cpuapp.hex \
             firmware/initial-swd/holyiot-25008-wheel-speed-merged.hex
           cp build-wheel/wheel_speed_sensor/zephyr/zephyr.signed.bin \
             firmware/ble-dfu/holyiot-25008-wheel-speed-signed.bin
