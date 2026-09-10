@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mateusz Zerebecki
+# SPDX-License-Identifier: Apache-2.0
+
+name: HOLYIOT wheel speed firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/lis2dh-fifo
+    paths:
+      - '.github/workflows/holyiot-wheel-speed.yml'
+      - 'boards/holyiot/holyiot_25008/**'
+      - 'drivers/sensor/st/lis2dh/**'
+      - 'dts/bindings/sensor/st,lis2dh-common.yaml'
+      - 'samples/bluetooth/wheel_speed_sensor/**'
+      - 'tests/drivers/sensor/lis2dh_fifo/**'
+  pull_request:
+    paths:
+      - '.github/workflows/holyiot-wheel-speed.yml'
+      - 'boards/holyiot/holyiot_25008/**'
+      - 'drivers/sensor/st/lis2dh/**'
+      - 'dts/bindings/sensor/st,lis2dh-common.yaml'
+      - 'samples/bluetooth/wheel_speed_sensor/**'
+      - 'tests/drivers/sensor/lis2dh_fifo/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BOARD: holyiot_25008/nrf54l15/cpuapp
+  APP_DIR: samples/bluetooth/wheel_speed_sensor
+
+jobs:
+  fifo-tests:
+    name: LIS2DH12 FIFO decoder tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Zephyr
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zephyr
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr workspace
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1.0.15
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          ccache-cache-key: holyiot-fifo-tests
+
+      - name: Run FIFO unit tests
+        working-directory: zephyr
+        run: |
+          west twister \
+            -T tests/drivers/sensor/lis2dh_fifo \
+            -p native_sim/native/64 \
+            --inline-logs \
+            --force-color \
+            -v
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: holyiot-fifo-test-report-${{ github.run_number }}
+          path: |
+            zephyr/twister-out/twister*.xml
+            zephyr/twister-out/**/handler.log
+            zephyr/twister-out/**/build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  firmware:
+    name: Build HOLYIOT 25008 firmware and MCUboot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Zephyr
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zephyr
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr workspace
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1.0.15
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          ccache-cache-key: holyiot-wheel-speed
+
+      - name: Build application and MCUboot
+        working-directory: zephyr
+        run: |
+          west build \
+            -b "${BOARD}" \
+            --sysbuild \
+            "${APP_DIR}" \
+            -d build-wheel \
+            --pristine=always
+
+      - name: Collect flash and DFU images
+        working-directory: zephyr
+        run: |
+          mkdir -p firmware/initial-swd firmware/ble-dfu firmware/debug
+          cp build-wheel/merged.hex \
+            firmware/initial-swd/holyiot-25008-wheel-speed-merged.hex
+          cp build-wheel/wheel_speed_sensor/zephyr/zephyr.signed.bin \
+            firmware/ble-dfu/holyiot-25008-wheel-speed-signed.bin
+          cp build-wheel/wheel_speed_sensor/zephyr/zephyr.signed.hex \
+            firmware/ble-dfu/holyiot-25008-wheel-speed-signed.hex
+          cp build-wheel/wheel_speed_sensor/zephyr/zephyr.elf \
+            firmware/debug/holyiot-25008-wheel-speed.elf
+          cp build-wheel/wheel_speed_sensor/zephyr/.config \
+            firmware/debug/application.config
+          cp build-wheel/mcuboot/zephyr/zephyr.elf \
+            firmware/debug/mcuboot.elf
+          cp build-wheel/mcuboot/zephyr/.config \
+            firmware/debug/mcuboot.config
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "ref=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "run=${GITHUB_RUN_ID}"
+            echo "board=${BOARD}"
+            echo "application=${APP_DIR}"
+          } > firmware/BUILD_INFO.txt
+          find firmware -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > firmware/SHA256SUMS.txt
+
+      - name: Upload ready-to-flash firmware
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: holyiot-25008-wheel-speed-${{ github.run_number }}
+          path: zephyr/firmware
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: holyiot-build-logs-${{ github.run_number }}
+          path: |
+            zephyr/build-wheel/**/build.log
+            zephyr/build-wheel/**/CMakeCache.txt
+          if-no-files-found: ignore
+          retention-days: 30
