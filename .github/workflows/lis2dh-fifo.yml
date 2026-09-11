@@ -15,6 +15,7 @@ on:
       - 'drivers/sensor/st/lis2dh/**'
       - 'dts/bindings/sensor/st,lis2dh-common.yaml'
       - 'samples/sensor/lis2dh_fifo/**'
+      - 'samples/sensor/lis2dh_fifo_dbg/**'
       - 'tests/drivers/sensor/lis2dh_fifo/**'
       - 'tests/drivers/sensor/lis2dh_decoder/**'
   pull_request:
@@ -23,6 +24,7 @@ on:
       - 'drivers/sensor/st/lis2dh/**'
       - 'dts/bindings/sensor/st,lis2dh-common.yaml'
       - 'samples/sensor/lis2dh_fifo/**'
+      - 'samples/sensor/lis2dh_fifo_dbg/**'
       - 'tests/drivers/sensor/lis2dh_fifo/**'
       - 'tests/drivers/sensor/lis2dh_decoder/**'
 
@@ -177,5 +179,81 @@ jobs:
             zephyr/build-${{ matrix.name }}/**/CMakeCache.txt
             zephyr/build-${{ matrix.name }}-debug/**/build.log
             zephyr/build-${{ matrix.name }}-debug/**/CMakeCache.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+  debug-firmware:
+    name: Build HOLYIOT debug firmware (MCUboot + MCUmgr)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Zephyr
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zephyr
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr workspace
+        # zephyrproject-rtos/action-zephyr-setup v1.0.15
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          ccache-cache-key: lis2dh-fifo-dbg
+
+      - name: Build debug firmware with MCUboot
+        working-directory: zephyr
+        run: |
+          west build \
+            -b holyiot_25008/nrf54l15/cpuapp \
+            --sysbuild \
+            samples/sensor/lis2dh_fifo_dbg \
+            -d build-dbg \
+            --pristine=always
+
+      - name: Collect flash and DFU images
+        working-directory: zephyr
+        run: |
+          mkdir -p firmware
+          cp build-dbg/merged_holyiot_25008_nrf54l15_cpuapp.hex firmware/
+          cp build-dbg/lis2dh_fifo_dbg/zephyr/zephyr.signed.bin firmware/
+          cp build-dbg/lis2dh_fifo_dbg/zephyr/zephyr.signed.hex firmware/
+          cp build-dbg/lis2dh_fifo_dbg/zephyr/zephyr.elf firmware/
+          cp build-dbg/lis2dh_fifo_dbg/zephyr/.config firmware/application.config
+          cp build-dbg/mcuboot/zephyr/zephyr.elf firmware/mcuboot.elf
+          cp build-dbg/mcuboot/zephyr/.config firmware/mcuboot.config
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "ref=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "run=${GITHUB_RUN_ID}"
+            echo "board=holyiot_25008/nrf54l15/cpuapp"
+            echo "application=samples/sensor/lis2dh_fifo_dbg"
+          } > firmware/BUILD_INFO.txt
+          find firmware -type f ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > firmware/SHA256SUMS.txt
+
+      - name: Upload debug firmware
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lis2dh-fifo-debug-${{ github.run_number }}
+          path: zephyr/firmware
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lis2dh-fifo-debug-logs-${{ github.run_number }}
+          path: |
+            zephyr/build-dbg/**/build.log
+            zephyr/build-dbg/**/CMakeCache.txt
           if-no-files-found: ignore
           retention-days: 30

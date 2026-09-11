@@ -1,0 +1,17 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+sample:
+  name: LIS2DH FIFO debug firmware (MCUboot + MCUmgr over BLE)
+tests:
+  sample.sensor.lis2dh_fifo_dbg:
+    build_only: true
+    sysbuild: true
+    tags:
+      - sensor
+      - bluetooth
+      - mcumgr
+    platform_allow:
+      - holyiot_25008/nrf54l15/cpuapp
+    integration_platforms:
+      - holyiot_25008/nrf54l15/cpuapp

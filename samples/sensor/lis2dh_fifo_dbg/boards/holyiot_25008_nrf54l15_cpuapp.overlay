@@ -1,0 +1,19 @@
+/*
+ * Copyright The Zephyr Project Contributors
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Bluetooth on nRF54L15 needs both the high- and low-frequency clocks. */
+&xo {
+	status = "okay";
+};
+
+&lfclk {
+	status = "okay";
+};
+
+/* LIS2DH12 on SPI00, INT1 on GPIO2.0 (see the board DTS). */
+&lis2dh {
+	fifo-watermark = <16>;
+};
