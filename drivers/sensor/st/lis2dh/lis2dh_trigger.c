@@ -26,15 +26,25 @@ static const gpio_flags_t gpio_int_cfg[5] = {
 			GPIO_INT_LEVEL_LOW,
 			};
 
-static inline void setup_int1(const struct device *dev,
-			      bool enable)
+int lis2dh_trigger_int1_set(const struct device *dev, bool enable)
 {
 	const struct lis2dh_config *cfg = dev->config;
 
-	gpio_pin_interrupt_configure_dt(&cfg->gpio_drdy,
-					enable
-					? gpio_int_cfg[cfg->int1_mode]
-					: GPIO_INT_DISABLE);
+	return gpio_pin_interrupt_configure_dt(
+		&cfg->gpio_drdy, enable ? gpio_int_cfg[cfg->int1_mode] : GPIO_INT_DISABLE);
+}
+
+int lis2dh_trigger_fifo_int1_set(const struct device *dev, bool enable)
+{
+	const struct lis2dh_config *cfg = dev->config;
+
+	return gpio_pin_interrupt_configure_dt(&cfg->gpio_drdy,
+					       enable ? GPIO_INT_LEVEL_ACTIVE : GPIO_INT_DISABLE);
+}
+
+static inline void setup_int1(const struct device *dev, bool enable)
+{
+	(void)lis2dh_trigger_int1_set(dev, enable);
 }
 
 static int lis2dh_trigger_drdy_set(const struct device *dev,
@@ -55,6 +65,7 @@ static int lis2dh_trigger_drdy_set(const struct device *dev,
 
 	/* cancel potentially pending trigger */
 	atomic_clear_bit(&lis2dh->trig_flags, TRIGGED_INT1);
+	atomic_clear_bit(&lis2dh->trig_flags, START_TRIG_INT1);
 
 	status = lis2dh->hw_tf->update_reg(dev, LIS2DH_REG_CTRL3,
 					   LIS2DH_EN_DRDY1_INT1, 0);
@@ -86,6 +97,15 @@ static int lis2dh_start_trigger_int1(const struct device *dev)
 	uint8_t raw[LIS2DH_BUF_SZ];
 	uint8_t ctrl1 = 0U;
 	struct lis2dh_data *lis2dh = dev->data;
+
+	if (lis2dh->handler_drdy == NULL) {
+		return 0;
+	}
+#ifdef CONFIG_LIS2DH_STREAM
+	if (lis2dh_fifo_is_busy(dev)) {
+		return -EBUSY;
+	}
+#endif
 
 	/* power down temporarily to align interrupt & data output sampling */
 	status = lis2dh->hw_tf->read_reg(dev, LIS2DH_REG_CTRL1, &ctrl1);
@@ -277,16 +297,29 @@ int lis2dh_trigger_set(const struct device *dev,
 		       const struct sensor_trigger *trig,
 		       sensor_trigger_handler_t handler)
 {
+	int status;
+
+	lis2dh_lock(dev);
+#ifdef CONFIG_LIS2DH_STREAM
+	if (lis2dh_fifo_is_busy(dev)) {
+		status = -EBUSY;
+		goto unlock;
+	}
+#endif
 	if (trig->type == SENSOR_TRIG_DATA_READY &&
 	    trig->chan == SENSOR_CHAN_ACCEL_XYZ) {
-		return lis2dh_trigger_drdy_set(dev, trig->chan, handler, trig);
+		status = lis2dh_trigger_drdy_set(dev, trig->chan, handler, trig);
 	} else if (trig->type == SENSOR_TRIG_DELTA) {
-		return lis2dh_trigger_anym_set(dev, handler, trig);
+		status = lis2dh_trigger_anym_set(dev, handler, trig);
 	} else if (trig->type == SENSOR_TRIG_TAP) {
-		return lis2dh_trigger_tap_set(dev, handler, trig);
+		status = lis2dh_trigger_tap_set(dev, handler, trig);
+	} else {
+		status = -ENOTSUP;
 	}
 
-	return -ENOTSUP;
+unlock:
+	lis2dh_unlock(dev);
+	return status;
 }
 
 int lis2dh_acc_slope_config(const struct device *dev,
@@ -433,6 +466,15 @@ static void lis2dh_thread_cb(const struct device *dev)
 	if (cfg->gpio_drdy.port &&
 			atomic_test_and_clear_bit(&lis2dh->trig_flags,
 			TRIGGED_INT1)) {
+#ifdef CONFIG_LIS2DH_STREAM
+		if (lis2dh_fifo_is_busy(dev)) {
+			status = lis2dh_fifo_handle_irq(dev);
+			if (status < 0) {
+				LOG_ERR("FIFO interrupt handling failed: %d", status);
+			}
+			return;
+		}
+#endif
 		if (likely(lis2dh->handler_drdy != NULL)) {
 			lis2dh->handler_drdy(dev, lis2dh->trig_drdy);
 		}
