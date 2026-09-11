@@ -52,7 +52,26 @@ service, so `nRF Connect Device Manager`_ can reach it:
 * **STAT** - read the ``lis2dh_fifo_stats`` group (``batches``, ``frames``).
 * **SHELL** - run Zephyr shell commands and read back the output.
 
-The wired console on UART20 (115200 8N1) stays available as a fallback.
+Console over BLE
+================
+
+The SHELL group is the untethered console: it runs shell commands through the
+dummy backend and returns the captured output, so the whole shell is available
+over BLE while the board runs on battery and the sensor can be moved freely.
+Command output is captured up to ``SHELL_BACKEND_DUMMY_BUF_SIZE`` (2048).
+
+Enabled command sets:
+
+* ``kernel`` - version, uptime, threads, stacks, reboot,
+* ``device`` - list the device tree,
+* ``devmem`` - read registers and memory,
+* ``sensor`` - list sensors and read channels and attributes,
+* ``stats`` - list and print the statistics groups,
+* ``flash`` - inspect flash pages and read raw contents.
+
+This is command-per-transaction, not a streaming terminal: each request runs
+one command and returns its output. The wired console on UART20 (115200 8N1)
+stays available as a fallback.
 
 Security
 ********
