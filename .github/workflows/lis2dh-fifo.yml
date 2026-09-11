@@ -1,0 +1,181 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mateusz Zerebecki
+# SPDX-License-Identifier: Apache-2.0
+
+name: LIS2DH FIFO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - test/dev
+      - lis2dh-fifo-upstream
+    paths:
+      - '.github/workflows/lis2dh-fifo.yml'
+      - 'drivers/sensor/st/lis2dh/**'
+      - 'dts/bindings/sensor/st,lis2dh-common.yaml'
+      - 'samples/sensor/lis2dh_fifo/**'
+      - 'tests/drivers/sensor/lis2dh_fifo/**'
+      - 'tests/drivers/sensor/lis2dh_decoder/**'
+  pull_request:
+    paths:
+      - '.github/workflows/lis2dh-fifo.yml'
+      - 'drivers/sensor/st/lis2dh/**'
+      - 'dts/bindings/sensor/st,lis2dh-common.yaml'
+      - 'samples/sensor/lis2dh_fifo/**'
+      - 'tests/drivers/sensor/lis2dh_fifo/**'
+      - 'tests/drivers/sensor/lis2dh_decoder/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: LIS2DH FIFO and decoder tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Zephyr
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zephyr
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr workspace
+        # zephyrproject-rtos/action-zephyr-setup v1.0.15
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          ccache-cache-key: lis2dh-fifo-tests
+
+      - name: Run LIS2DH FIFO and decoder tests
+        working-directory: zephyr
+        run: |
+          west twister \
+            -T tests/drivers/sensor/lis2dh_fifo \
+            -T tests/drivers/sensor/lis2dh_decoder \
+            -p native_sim/native/64 \
+            --enable-asan \
+            --inline-logs \
+            --force-color \
+            -v
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lis2dh-fifo-test-report-${{ github.run_number }}
+          path: |
+            zephyr/twister-out/twister*.xml
+            zephyr/twister-out/**/handler.log
+            zephyr/twister-out/**/build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  build:
+    name: Build ${{ matrix.board }} sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: holyiot_25008/nrf54l15/cpuapp
+            name: holyiot-25008
+          - board: xiao_ble/nrf52840
+            name: xiao-ble
+    steps:
+      - name: Checkout Zephyr
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zephyr
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr workspace
+        # zephyrproject-rtos/action-zephyr-setup v1.0.15
+        uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          ccache-cache-key: lis2dh-fifo-${{ matrix.name }}
+
+      - name: Build LIS2DH FIFO sample
+        working-directory: zephyr
+        run: |
+          west build \
+            -b "${{ matrix.board }}" \
+            samples/sensor/lis2dh_fifo \
+            -d "build-${{ matrix.name }}" \
+            --pristine=always
+
+      - name: Build debug configuration
+        working-directory: zephyr
+        run: |
+          west build \
+            -b "${{ matrix.board }}" \
+            samples/sensor/lis2dh_fifo \
+            -d "build-${{ matrix.name }}-debug" \
+            --pristine=always \
+            -- -DEXTRA_CONF_FILE=debug.conf
+
+      - name: Collect firmware images
+        working-directory: zephyr
+        run: |
+          mkdir -p "firmware-${{ matrix.name }}"
+          cp "build-${{ matrix.name }}/zephyr/zephyr.elf" "firmware-${{ matrix.name }}/"
+          cp "build-${{ matrix.name }}/zephyr/.config" \
+            "firmware-${{ matrix.name }}/application.config"
+          for ext in hex bin uf2; do
+            if [ -f "build-${{ matrix.name }}/zephyr/zephyr.${ext}" ]; then
+              cp "build-${{ matrix.name }}/zephyr/zephyr.${ext}" \
+                "firmware-${{ matrix.name }}/"
+            fi
+          done
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "ref=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "run=${GITHUB_RUN_ID}"
+            echo "board=${{ matrix.board }}"
+            echo "application=samples/sensor/lis2dh_fifo"
+          } > "firmware-${{ matrix.name }}/BUILD_INFO.txt"
+          find "firmware-${{ matrix.name }}" -type f \
+            ! -name SHA256SUMS.txt -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > "firmware-${{ matrix.name }}/SHA256SUMS.txt"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lis2dh-fifo-${{ matrix.name }}-${{ github.run_number }}
+          path: zephyr/firmware-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lis2dh-fifo-${{ matrix.name }}-logs-${{ github.run_number }}
+          path: |
+            zephyr/build-${{ matrix.name }}/**/build.log
+            zephyr/build-${{ matrix.name }}/**/CMakeCache.txt
+            zephyr/build-${{ matrix.name }}-debug/**/build.log
+            zephyr/build-${{ matrix.name }}-debug/**/CMakeCache.txt
+          if-no-files-found: ignore
+          retention-days: 30
